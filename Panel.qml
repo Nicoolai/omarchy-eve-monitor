@@ -28,6 +28,12 @@ Panel {
   property var pendingDetailTarget: null
   property real detailScrollY: 0
   property real pendingDetailScrollY: 0
+  property bool trainingQueueExpanded: true
+  property bool trainingSkillsExpanded: true
+  property bool wealthBalanceExpanded: true
+  property bool wealthCashflowExpanded: true
+  property var characterSectionsExpanded: ({ implants: true, clones: true, fatigue: true, standings: true, loyalty: true })
+  property var trainingCategoriesExpanded: ({})
   property string settingsMessage: ""
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -100,6 +106,20 @@ Panel {
     if (view !== "overview" && view !== "settings") root.loadDetails(view)
   }
 
+  function toggleCharacterSection(key) {
+    var next = {}
+    for (var name in root.characterSectionsExpanded) next[name] = root.characterSectionsExpanded[name]
+    next[key] = root.characterSectionsExpanded[key] === false
+    root.characterSectionsExpanded = next
+  }
+
+  function toggleTrainingCategory(key) {
+    var next = {}
+    for (var name in root.trainingCategoriesExpanded) next[name] = root.trainingCategoriesExpanded[name]
+    next[key] = root.trainingCategoriesExpanded[key] === false
+    root.trainingCategoriesExpanded = next
+  }
+
   function viewLabel(view) {
     var labels = { overview: "OVERVIEW", training: "TRAINING", wealth: "WEALTH", industry_market: "INDUSTRY", activity: "ACTIVITY", character: "CHARACTER", settings: "SETTINGS" }
     return labels[view] || String(view).toUpperCase()
@@ -166,65 +186,75 @@ Panel {
   function characterRows() {
     var data = root.detailPayload.data || {}
     var rows = []
-    function section(label) { rows.push({ kind: "section", label: label }) }
+    function section(key, label) { rows.push({ kind: "section", key: key, label: label, expanded: root.characterSectionsExpanded[key] !== false }) }
     function empty(label) { rows.push({ kind: "empty", label: label }) }
     function value(label, text) { rows.push({ kind: "value", label: label, value: String(text) }) }
 
-    section("IMPLANTS")
-    var implants = data.implants || []
-    if (implants.length === 0) empty("No implants reported")
-    for (var i = 0; i < implants.length; i++) value(implantLabel(implants[i]), "")
-
-    section("CLONES")
-    var clones = data.clones || {}
-    var home = clones.home_location || {}
-    var jumpClones = clones.jump_clones || []
-    if (home.location_id !== undefined) value("Home", home.locationName || ("Location " + home.location_id))
-    for (var j = 0; j < jumpClones.length; j++) {
-      var clone = jumpClones[j] || {}
-      var cloneLocation = clone.locationName || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
-      var cloneName = clone.name || (clone.locationName ? "Clone at " + clone.locationName : "Jump clone " + (clone.jump_clone_id || (j + 1)))
-      value(cloneName, clone.name ? cloneLocation : "")
+    section("implants", "IMPLANTS")
+    if (root.characterSectionsExpanded.implants !== false) {
+      var implants = data.implants || []
+      if (implants.length === 0) empty("No implants reported")
+      for (var i = 0; i < implants.length; i++) value(implantLabel(implants[i]), "")
     }
-    if (home.location_id === undefined && jumpClones.length === 0) empty("No clones reported")
 
-    section("FATIGUE")
-    var fatigue = data.fatigue || {}
-    var fatigueCount = 0
-    var fatigueExpired = false
-    if (fatigue.jump_fatigue_expire_date) {
-      var fatigueExpiry = new Date(fatigue.jump_fatigue_expire_date)
-      fatigueExpired = !isNaN(fatigueExpiry.getTime()) && fatigueExpiry.getTime() <= Date.now()
+    section("clones", "CLONES")
+    if (root.characterSectionsExpanded.clones !== false) {
+      var clones = data.clones || {}
+      var home = clones.home_location || {}
+      var jumpClones = clones.jump_clones || []
+      if (home.location_id !== undefined) value("Home", home.locationName || ("Location " + home.location_id))
+      for (var j = 0; j < jumpClones.length; j++) {
+        var clone = jumpClones[j] || {}
+        var cloneLocation = clone.locationName || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
+        var cloneName = clone.name || (clone.locationName ? "Clone at " + clone.locationName : "Jump clone " + (clone.jump_clone_id || (j + 1)))
+        value(cloneName, clone.name ? cloneLocation : "")
+      }
+      if (home.location_id === undefined && jumpClones.length === 0) empty("No clones reported")
     }
-    if (!fatigueExpired) {
+
+    section("fatigue", "FATIGUE")
+    if (root.characterSectionsExpanded.fatigue !== false) {
+      var fatigue = data.fatigue || {}
+      var fatigueCount = 0
+      var fatigueExpired = false
       if (fatigue.jump_fatigue_expire_date) {
-        value("Jump fatigue expires", localTimestamp(fatigue.jump_fatigue_expire_date))
-        fatigueCount++
+        var fatigueExpiry = new Date(fatigue.jump_fatigue_expire_date)
+        fatigueExpired = !isNaN(fatigueExpiry.getTime()) && fatigueExpiry.getTime() <= Date.now()
       }
-      if (fatigue.last_jump_date) {
-        value("Last jump", localTimestamp(fatigue.last_jump_date))
-        fatigueCount++
+      if (!fatigueExpired) {
+        if (fatigue.jump_fatigue_expire_date) {
+          value("Jump fatigue expires", localTimestamp(fatigue.jump_fatigue_expire_date))
+          fatigueCount++
+        }
+        if (fatigue.last_jump_date) {
+          value("Last jump", localTimestamp(fatigue.last_jump_date))
+          fatigueCount++
+        }
       }
-    }
-    if (fatigueExpired || fatigueCount === 0) empty("No fatigue reported")
-
-    section("STANDINGS")
-    var standings = Array.isArray(data.standings) ? data.standings.slice() : []
-    standings.sort(function(a, b) { return (Number(b.standing) || 0) - (Number(a.standing) || 0) })
-    if (standings.length === 0) empty("No standings reported")
-    for (var k = 0; k < standings.length; k++) {
-      var standing = standings[k] || {}
-      var standingName = standing.fromName || ((standing.from_type || "Entity") + " " + (standing.from_id || "unknown"))
-      value(standingName, Number(standing.standing || 0).toFixed(2))
+      if (fatigueExpired || fatigueCount === 0) empty("No fatigue reported")
     }
 
-    section("LOYALTY")
-    var loyalty = Array.isArray(data.loyalty) ? data.loyalty.slice() : []
-    loyalty.sort(function(a, b) { return (Number(b.loyalty_points) || 0) - (Number(a.loyalty_points) || 0) })
-    if (loyalty.length === 0) empty("No loyalty points reported")
-    for (var m = 0; m < loyalty.length; m++) {
-      var points = loyalty[m] || {}
-      value(points.corporationName || ("Corporation " + (points.corporation_id || "unknown")), Model.formatNumber(points.loyalty_points || 0) + " points")
+    section("standings", "STANDINGS")
+    if (root.characterSectionsExpanded.standings !== false) {
+      var standings = Array.isArray(data.standings) ? data.standings.slice() : []
+      standings.sort(function(a, b) { return (Number(b.standing) || 0) - (Number(a.standing) || 0) })
+      if (standings.length === 0) empty("No standings reported")
+      for (var k = 0; k < standings.length; k++) {
+        var standing = standings[k] || {}
+        var standingName = standing.fromName || ((standing.from_type || "Entity") + " " + (standing.from_id || "unknown"))
+        value(standingName, Number(standing.standing || 0).toFixed(2))
+      }
+    }
+
+    section("loyalty", "LOYALTY")
+    if (root.characterSectionsExpanded.loyalty !== false) {
+      var loyalty = Array.isArray(data.loyalty) ? data.loyalty.slice() : []
+      loyalty.sort(function(a, b) { return (Number(b.loyalty_points) || 0) - (Number(a.loyalty_points) || 0) })
+      if (loyalty.length === 0) empty("No loyalty points reported")
+      for (var m = 0; m < loyalty.length; m++) {
+        var points = loyalty[m] || {}
+        value(points.corporationName || ("Corporation " + (points.corporation_id || "unknown")), Model.formatNumber(points.loyalty_points || 0) + " points")
+      }
     }
     return rows
   }
@@ -271,15 +301,17 @@ Panel {
       var skill = skills[i]
       var category = String(skill.category || "Uncategorized")
       if (category !== lastCategory) {
-        rows.push({ kind: "category", label: category })
+        rows.push({ kind: "category", label: category, expanded: root.trainingCategoriesExpanded[category] !== false })
         lastCategory = category
       }
-      rows.push({
-        kind: "skill",
-        name: skill.name || "Unknown skill",
-        level: skill.trained_skill_level || 0,
-        skillPoints: skill.skillpoints_in_skill || 0,
-      })
+      if (root.trainingCategoriesExpanded[category] !== false) {
+        rows.push({
+          kind: "skill",
+          name: skill.name || "Unknown skill",
+          level: skill.trained_skill_level || 0,
+          skillPoints: skill.skillpoints_in_skill || 0,
+        })
+      }
     }
     return rows
   }
@@ -879,21 +911,40 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          Text {
+          Item {
             width: parent.width
             visible: root.activeView === "training" && !root.detailLoading
-            text: "CURRENT TRAINING QUEUE"
-            textFormat: Text.PlainText
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            height: Style.space(22)
+            Text {
+              anchors.left: parent.left
+              anchors.right: queueToggle.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "CURRENT TRAINING QUEUE"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: queueToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.trainingQueueExpanded ? "-" : "+"
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.trainingQueueExpanded = !root.trainingQueueExpanded
+            }
           }
 
           ListView {
             id: trainingQueueList
             width: parent.width
             height: Math.min(contentHeight, Style.space(180))
-            visible: root.activeView === "training" && !root.detailLoading && root.character !== null && root.character.queue && root.character.queue.length > 0
+            visible: root.activeView === "training" && !root.detailLoading && root.trainingQueueExpanded && root.character !== null && root.character.queue && root.character.queue.length > 0
             model: root.character ? root.character.queue : []
             clip: true
             spacing: Style.space(2)
@@ -944,7 +995,7 @@ Panel {
 
           Text {
             width: parent.width
-            visible: root.activeView === "training" && !root.detailLoading && (!root.character || !root.character.queue || root.character.queue.length === 0)
+            visible: root.activeView === "training" && !root.detailLoading && root.trainingQueueExpanded && (!root.character || !root.character.queue || root.character.queue.length === 0)
             text: "No queued training"
             textFormat: Text.PlainText
             color: root.dim
@@ -952,23 +1003,43 @@ Panel {
             font.pixelSize: Style.font.body
           }
 
-          Text {
+          Item {
             width: parent.width
             visible: root.activeView === "training" && !root.detailLoading
-            text: root.detailPayload.data
-              ? "TRAINED SKILLS  " + Model.formatNumber(root.detailPayload.data.totalSp || 0) + " SP" + ((root.detailPayload.data.unallocatedSp || 0) > 0 ? "  |  " + Model.formatNumber(root.detailPayload.data.unallocatedSp) + " unallocated" : "")
-              : "TRAINED SKILLS"
-            textFormat: Text.PlainText
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            height: Style.space(22)
+            Text {
+              anchors.left: parent.left
+              anchors.right: skillsToggle.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.detailPayload.data
+                ? "TRAINED SKILLS  " + Model.formatNumber(root.detailPayload.data.totalSp || 0) + " SP" + ((root.detailPayload.data.unallocatedSp || 0) > 0 ? "  |  " + Model.formatNumber(root.detailPayload.data.unallocatedSp) + " unallocated" : "")
+                : "TRAINED SKILLS"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+            Text {
+              id: skillsToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.trainingSkillsExpanded ? "-" : "+"
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.trainingSkillsExpanded = !root.trainingSkillsExpanded
+            }
           }
 
           ListView {
             id: trainingSkillList
             width: parent.width
             height: Math.min(contentHeight, Style.space(400))
-            visible: root.activeView === "training" && !root.detailLoading
+            visible: root.activeView === "training" && !root.detailLoading && root.trainingSkillsExpanded
             model: root.trainingRows()
             clip: true
             spacing: Style.space(2)
@@ -978,7 +1049,8 @@ Panel {
               height: modelData.kind === "category" ? Style.space(26) : Style.space(28)
               Text {
                 anchors.left: parent.left
-                anchors.right: parent.right
+                anchors.right: categoryToggle.left
+                anchors.rightMargin: Style.space(8)
                 anchors.bottom: parent.bottom
                 visible: modelData.kind === "category"
                 text: modelData.label
@@ -987,6 +1059,21 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.bold: true
+              }
+              Text {
+                id: categoryToggle
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                visible: modelData.kind === "category"
+                text: modelData.expanded ? "-" : "+"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              MouseArea {
+                anchors.fill: parent
+                visible: modelData.kind === "category"
+                onClicked: root.toggleTrainingCategory(modelData.label)
               }
               Text {
                 anchors.left: parent.left
@@ -1030,13 +1117,42 @@ Panel {
             }
           }
 
+          Item {
+            width: parent.width
+            visible: root.activeView === "wealth" && !root.detailLoading
+            height: Style.space(22)
+            Text {
+              anchors.left: parent.left
+              anchors.right: balanceToggle.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "BALANCE"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: balanceToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.wealthBalanceExpanded ? "-" : "+"
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.wealthBalanceExpanded = !root.wealthBalanceExpanded
+            }
+          }
+
           Grid {
             width: parent.width
             columns: 2
             rowSpacing: Style.space(8)
             columnSpacing: Style.space(20)
-            visible: root.activeView === "wealth" && !root.detailLoading
-            Text { text: "BALANCE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            visible: root.activeView === "wealth" && !root.detailLoading && root.wealthBalanceExpanded
+            Text { text: "WALLET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
             Text { text: root.detailPayload.data ? Model.formatIsk(root.detailPayload.data.wallet || 0) : ""; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body }
             Text { text: "IN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
             Text { text: root.detailPayload.data && root.detailPayload.data.cashflow ? Model.formatIsk(root.detailPayload.data.cashflow.income || 0) : ""; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body }
@@ -1051,21 +1167,40 @@ Panel {
             }
           }
 
-          Text {
+          Item {
             width: parent.width
             visible: root.activeView === "wealth" && !root.detailLoading
-            text: "CASH FLOW  |  LAST 30 DAYS"
-            textFormat: Text.PlainText
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
+            height: Style.space(22)
+            Text {
+              anchors.left: parent.left
+              anchors.right: cashflowToggle.left
+              anchors.verticalCenter: parent.verticalCenter
+              text: "CASH FLOW  |  LAST 30 DAYS"
+              textFormat: Text.PlainText
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              id: cashflowToggle
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.wealthCashflowExpanded ? "-" : "+"
+              color: root.accent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            MouseArea {
+              anchors.fill: parent
+              onClicked: root.wealthCashflowExpanded = !root.wealthCashflowExpanded
+            }
           }
 
           Item {
             id: walletChart
             width: parent.width
             height: Style.space(130)
-            visible: root.activeView === "wealth" && !root.detailLoading && root.walletFlowDays().length > 0
+            visible: root.activeView === "wealth" && !root.detailLoading && root.wealthCashflowExpanded && root.walletFlowDays().length > 0
 
             Rectangle {
               id: cashflowZero
@@ -1143,7 +1278,8 @@ Panel {
 
               Text {
                 anchors.left: parent.left
-                anchors.right: parent.right
+                anchors.right: characterToggle.left
+                anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 visible: modelData.kind === "section"
                 text: modelData.label
@@ -1152,6 +1288,16 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
+              }
+              Text {
+                id: characterToggle
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: modelData.kind === "section"
+                text: modelData.expanded ? "-" : "+"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
               }
               Text {
                 anchors.left: parent.left
@@ -1178,6 +1324,11 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 elide: Text.ElideLeft
+              }
+              MouseArea {
+                anchors.fill: parent
+                visible: modelData.kind === "section"
+                onClicked: root.toggleCharacterSection(modelData.key)
               }
             }
           }
