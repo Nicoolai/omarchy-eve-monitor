@@ -140,6 +140,16 @@ Panel {
     return text.length >= 10 ? text.substring(5, 10) : text
   }
 
+  function localTimestamp(value) {
+    var text = String(value || "")
+    if (!text) return ""
+    var date = new Date(text)
+    if (isNaN(date.getTime())) return text
+    function pad(number) { return number < 10 ? "0" + number : String(number) }
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+      + " " + pad(date.getHours()) + ":" + pad(date.getMinutes())
+  }
+
   function walletAmount(value) {
     var amount = Number(value) || 0
     return (amount >= 0 ? "+" : "-") + Model.formatIsk(Math.abs(amount))
@@ -181,11 +191,11 @@ Panel {
     var fatigue = data.fatigue || {}
     var fatigueCount = 0
     if (fatigue.jump_fatigue_expire_date) {
-      value("Jump fatigue expires", fatigue.jump_fatigue_expire_date)
+      value("Jump fatigue expires", localTimestamp(fatigue.jump_fatigue_expire_date))
       fatigueCount++
     }
     if (fatigue.last_jump_date) {
-      value("Last jump", fatigue.last_jump_date)
+      value("Last jump", localTimestamp(fatigue.last_jump_date))
       fatigueCount++
     }
     if (fatigueCount === 0) empty("No fatigue reported")
@@ -1181,9 +1191,9 @@ Panel {
                   : root.activeView === "industry_market"
                     ? (modelData._rowKind === "order"
                       ? (modelData.is_buy_order ? "BUY " : "SELL ") + (modelData.typeName || ("Type " + (modelData.type_id || ""))) + "  -  " + Model.formatIsk(modelData.price || 0)
-                      : "Job " + (modelData.job_id || "") + "  -  " + (modelData.status || "unknown") + "  -  " + (modelData.end_date || ""))
+                      : "Job " + (modelData.job_id || "") + "  -  " + (modelData.status || "unknown") + "  -  " + localTimestamp(modelData.end_date))
                     : root.activeView === "activity"
-                      ? (modelData.type || "Notification") + "  -  " + (modelData.timestamp || "")
+                      ? (modelData.type || "Notification") + "  -  " + localTimestamp(modelData.timestamp)
                        : root.implantLabel(modelData)
                 textFormat: Text.PlainText
                 color: root.foreground
