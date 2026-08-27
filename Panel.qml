@@ -22,6 +22,7 @@ Panel {
   property string activeView: "overview"
   property var detailPayload: ({ ok: false, data: {}, errors: [] })
   property bool detailLoading: false
+  property string detailView: ""
   property string detailCharacterId: ""
   property string pendingDetailView: ""
   property var pendingDetailTarget: null
@@ -86,9 +87,9 @@ Panel {
     selectedIndex = index
     displayedCharacterId = String(nextCharacter.characterId)
     pendingCharacterId = String(nextCharacter.characterId)
+    if (activeView !== "overview") loadDetails(activeView, nextCharacter)
     if (hostWidget.setSelectedCharacter) hostWidget.setSelectedCharacter(nextCharacter.characterId)
     selectionTimer.restart()
-    if (activeView !== "overview") loadDetails(activeView, nextCharacter)
   }
 
   function authAdd() { if (hostWidget && hostWidget.authAdd) hostWidget.authAdd() }
@@ -278,6 +279,9 @@ Panel {
     var target = targetCharacter || root.character
     if (!target || !root.hostWidget) return
     var currentScrollY = restoreY === undefined ? contentFlick.contentY : restoreY
+    var sameView = root.detailView === view
+    root.detailView = view
+    if (!sameView) root.detailPayload = { ok: false, data: {}, errors: [] }
     if (detailProcess.running) {
       root.pendingDetailView = view
       root.pendingDetailTarget = target
@@ -287,7 +291,6 @@ Panel {
     root.detailScrollY = Math.max(0, currentScrollY)
     root.detailCharacterId = String(target.characterId)
     root.detailLoading = true
-    root.detailPayload = { ok: false, data: {}, errors: [] }
     detailProcess.command = ["python3", root.hostWidget.script, "details", String(target.characterId), view]
     detailProcess.running = true
   }
@@ -1119,7 +1122,7 @@ Panel {
             id: characterDetailList
             width: parent.width
             height: Math.min(contentHeight, Style.space(500))
-            visible: root.activeView === "character" && !root.detailLoading
+            visible: root.activeView === "character"
             model: root.characterRows()
             clip: true
             spacing: Style.space(2)
