@@ -177,7 +177,7 @@ def update_catalog() -> dict:
             shutil.copyfileobj(response, target)
         with zipfile.ZipFile(temporary) as archive:
             groups = {
-                int(record["_key"])
+                int(record["_key"]): (record.get("name", {}).get("en", "") if isinstance(record.get("name"), dict) else str(record.get("name", "")))
                 for record in catalog_records(archive, "groups.jsonl")
                 if record.get("categoryID") == 16 and str(record.get("_key", "")).isdigit()
             }
@@ -213,6 +213,7 @@ def update_catalog() -> dict:
                 "rank": int(attributes.get(275, 1) or 1),
                 "primary": int(attributes.get(180, 166) or 166),
                 "secondary": int(attributes.get(181, 165) or 165),
+                "group": str(groups.get(int(record.get("groupID", 0) or 0), "Uncategorized")),
                 "requirements": requirements,
             }
         payload = {"source": SDE_URL, "updatedAt": now_epoch(), "skills": skills}
@@ -449,7 +450,11 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
         data = {
             "totalSp": skills.get("total_sp", 0),
             "unallocatedSp": skills.get("unallocated_sp", 0),
-            "skills": [{**item, "name": names.get(int(item.get("skill_id", 0)), "Unknown skill")} for item in skills.get("skills", [])],
+            "skills": [{
+                **item,
+                "name": names.get(int(item.get("skill_id", 0)), "Unknown skill"),
+                "category": catalog.get(str(item.get("skill_id", 0)), {}).get("group", "Uncategorized"),
+            } for item in skills.get("skills", [])],
         }
     elif feature == "wallet":
         collect_feature(client, "wallet", lambda: client.get(f"{prefix}/wallet", ttl=120, force=force), data, errors)
@@ -509,8 +514,8 @@ def demo_detail(feature: str) -> dict:
 
     if feature == "skills":
         common["data"] = {"totalSp": 112345678, "unallocatedSp": 0, "skills": [
-            {"skill_id": 3300, "name": "Gunnery", "trained_skill_level": 5, "active_skill_level": 5, "skillpoints_in_skill": 256000},
-            {"skill_id": 3301, "name": "Small Projectile Turret", "trained_skill_level": 4, "active_skill_level": 4, "skillpoints_in_skill": 45255},
+            {"skill_id": 3300, "name": "Gunnery", "category": "Gunnery", "trained_skill_level": 5, "active_skill_level": 5, "skillpoints_in_skill": 256000},
+            {"skill_id": 3301, "name": "Small Projectile Turret", "category": "Gunnery", "trained_skill_level": 4, "active_skill_level": 4, "skillpoints_in_skill": 45255},
         ]}
     elif feature == "wallet":
         common["data"] = {"wallet": 425000000.12, "journal": [{"date": "2026-08-27T17:30:00Z", "ref_type": "market_transaction", "description": "Demo sale", "amount": 12500000, "balance": 425000000.12}], "transactions": [{"date": "2026-08-27T17:30:00Z", "type_id": 34, "quantity": 1000, "unit_price": 12500, "is_buy": False}]}

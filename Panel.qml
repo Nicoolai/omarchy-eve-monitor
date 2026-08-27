@@ -113,6 +113,38 @@ Panel {
     return data.implants || []
   }
 
+  function trainingRows() {
+    var skills = root.detailPayload.data && root.detailPayload.data.skills
+      ? root.detailPayload.data.skills.slice()
+      : []
+    skills.sort(function(a, b) {
+      var categoryA = String(a.category || "Uncategorized").toLowerCase()
+      var categoryB = String(b.category || "Uncategorized").toLowerCase()
+      if (categoryA !== categoryB) return categoryA < categoryB ? -1 : 1
+      var nameA = String(a.name || "Unknown skill").toLowerCase()
+      var nameB = String(b.name || "Unknown skill").toLowerCase()
+      return nameA === nameB ? 0 : (nameA < nameB ? -1 : 1)
+    })
+
+    var rows = []
+    var lastCategory = ""
+    for (var i = 0; i < skills.length; i++) {
+      var skill = skills[i]
+      var category = String(skill.category || "Uncategorized")
+      if (category !== lastCategory) {
+        rows.push({ kind: "category", label: category })
+        lastCategory = category
+      }
+      rows.push({
+        kind: "skill",
+        name: skill.name || "Unknown skill",
+        level: skill.trained_skill_level || 0,
+        skillPoints: skill.skillpoints_in_skill || 0,
+      })
+    }
+    return rows
+  }
+
   function loadDetails(view, targetCharacter) {
     var target = targetCharacter || root.character
     if (!target || !root.hostWidget) return
@@ -418,7 +450,7 @@ Panel {
         }
 
         Column {
-          id: settingsColumn
+          id: planColumn
           width: parent.width
           spacing: Style.space(5)
           visible: root.activeView === "overview" && root.plans.length > 0
@@ -485,6 +517,7 @@ Panel {
         }
 
         Column {
+          id: settingsOptionsColumn
           width: parent.width
           spacing: Style.space(10)
           visible: root.activeView === "settings"
@@ -524,7 +557,7 @@ Panel {
             }
             Item {
               id: modeControl
-              width: settingsColumn.settingsControlWidth
+              width: settingsOptionsColumn.settingsControlWidth
               height: modeButton.implicitHeight
               implicitHeight: height
               anchors.right: parent.right
@@ -560,7 +593,7 @@ Panel {
             }
             Item {
               id: refreshControl
-              width: settingsColumn.settingsControlWidth
+              width: settingsOptionsColumn.settingsControlWidth
               height: refreshPlus.implicitHeight
               implicitHeight: height
               anchors.right: parent.right
@@ -619,7 +652,7 @@ Panel {
             }
             Item {
               id: nameControl
-              width: settingsColumn.settingsControlWidth
+              width: settingsOptionsColumn.settingsControlWidth
               height: nameButton.implicitHeight
               implicitHeight: height
               anchors.right: parent.right
@@ -672,20 +705,154 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
+          Text {
+            width: parent.width
+            visible: root.activeView === "training" && !root.detailLoading
+            text: "CURRENT TRAINING QUEUE"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           ListView {
+            id: trainingQueueList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(180))
+            visible: root.activeView === "training" && !root.detailLoading && root.character !== null && root.character.queue && root.character.queue.length > 0
+            model: root.character ? root.character.queue : []
+            clip: true
+            spacing: Style.space(2)
+            delegate: Item {
+              required property var modelData
+              width: trainingQueueList.width
+              height: Style.space(30)
+              Text {
+                anchors.left: parent.left
+                anchors.right: queueLevel.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                text: (modelData.queuePosition === 0 ? "NOW  " : "#" + (modelData.queuePosition + 1) + "  ") + (modelData.skillName || "Unknown skill")
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+              Text {
+                id: queueLevel
+                anchors.right: queueEta.left
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(55)
+                text: "to L" + (modelData.finishedLevel || 0)
+                textFormat: Text.PlainText
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                id: queueEta
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(80)
+                text: modelData.queuePosition === 0
+                  ? Model.formatDuration(Model.liveRemaining(root.character))
+                  : Model.formatDuration(Math.max(0, Model.dateSeconds(modelData.finishDate) - Date.now() / 1000))
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignRight
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.activeView === "training" && !root.detailLoading && (!root.character || !root.character.queue || root.character.queue.length === 0)
+            text: "No queued training"
+            textFormat: Text.PlainText
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          Text {
+            width: parent.width
+            visible: root.activeView === "training" && !root.detailLoading
+            text: root.detailPayload.data
+              ? "TRAINED SKILLS  " + Model.formatNumber(root.detailPayload.data.totalSp || 0) + " SP" + ((root.detailPayload.data.unallocatedSp || 0) > 0 ? "  |  " + Model.formatNumber(root.detailPayload.data.unallocatedSp) + " unallocated" : "")
+              : "TRAINED SKILLS"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          ListView {
+            id: trainingSkillList
             width: parent.width
             height: Math.min(contentHeight, Style.space(400))
             visible: root.activeView === "training" && !root.detailLoading
-            model: root.detailPayload.data && root.detailPayload.data.skills ? root.detailPayload.data.skills : []
+            model: root.trainingRows()
             clip: true
             spacing: Style.space(2)
-            delegate: Row {
+            delegate: Item {
               required property var modelData
-              width: parent.width
-              height: Style.space(30)
-              Text { width: parent.width - Style.space(210); text: modelData.name; textFormat: Text.PlainText; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; elide: Text.ElideRight }
-              Text { width: Style.space(90); text: "L" + modelData.trained_skill_level; textFormat: Text.PlainText; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-              Text { width: Style.space(120); text: Model.formatNumber(modelData.skillpoints_in_skill || 0) + " SP"; textFormat: Text.PlainText; horizontalAlignment: Text.AlignRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+              width: trainingSkillList.width
+              height: modelData.kind === "category" ? Style.space(26) : Style.space(28)
+              Text {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                visible: modelData.kind === "category"
+                text: modelData.label
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.right: skillLevel.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                visible: modelData.kind === "skill"
+                text: modelData.name
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+              Text {
+                id: skillLevel
+                anchors.right: skillPoints.left
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(45)
+                visible: modelData.kind === "skill"
+                text: "L" + modelData.level
+                textFormat: Text.PlainText
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                id: skillPoints
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(100)
+                visible: modelData.kind === "skill"
+                text: Model.formatNumber(modelData.skillPoints) + " SP"
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignRight
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
             }
           }
 

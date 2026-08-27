@@ -21,6 +21,16 @@ class FakeClient:
         return {"name": "Test Skill"}
 
 
+class SkillClient:
+    def __init__(self, character):
+        self.character = character
+
+    def get(self, path, **kwargs):
+        return {"total_sp": 123456, "unallocated_sp": 789, "skills": [
+            {"skill_id": 42, "trained_skill_level": 4, "skillpoints_in_skill": 45255},
+        ]}
+
+
 class BackendTests(unittest.TestCase):
     def test_iso_epoch_accepts_eve_dates(self):
         self.assertEqual(eve_monitor.iso_epoch("2026-01-01T00:00:00Z"), 1767225600)
@@ -47,6 +57,17 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(eve_monitor.skill_points_for_level(1, 1), 250)
         self.assertEqual(eve_monitor.skill_points_for_level(1, 5), 256000)
         self.assertEqual(eve_monitor.skill_points_for_level(3, 3), 24000)
+
+    def test_skill_details_include_catalog_category(self):
+        with patch.object(eve_monitor, "EsiClient", SkillClient), patch.object(
+            eve_monitor,
+            "load_catalog",
+            return_value={"skills": {"42": {"name": "Test Skill", "group": "Gunnery"}}},
+        ):
+            payload = eve_monitor.detail_snapshot({"character_id": 123}, "skills", False)
+        self.assertEqual(payload["data"]["skills"][0]["name"], "Test Skill")
+        self.assertEqual(payload["data"]["skills"][0]["category"], "Gunnery")
+        self.assertEqual(payload["data"]["totalSp"], 123456)
 
     def test_plan_prerequisites_merge_to_highest_level(self):
         catalog = {"skills": {
@@ -106,6 +127,10 @@ class BackendTests(unittest.TestCase):
                 self.assertTrue(payload["ok"])
                 self.assertEqual(payload["feature"], feature)
                 self.assertEqual(payload["errors"], [])
+
+    def test_demo_training_skills_include_categories(self):
+        payload = eve_monitor.demo_detail("training")
+        self.assertTrue(all(item.get("category") for item in payload["data"]["skills"]))
 
     def test_demo_detail_rejects_unknown_feature(self):
         with self.assertRaises(eve_monitor.MonitorError):

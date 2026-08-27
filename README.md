@@ -8,9 +8,10 @@ state. One widget manages as many characters as you authorize.
 
 This is the initial development release. Current queue monitoring, live
 countdowns, multi-character selection, secure PKCE authorization, persistent
-ESI caching, demo mode, local skill plans, prerequisite/ETA calculations, and
-lazy detail panels are implemented. Plan editing is currently exposed through
-the backend CLI while the dashboard focuses on monitoring.
+ESI caching, demo mode, local skill plans, prerequisite/ETA calculations,
+categorized trained skills, and lazy detail panels are implemented. Plan
+editing is currently exposed through the backend CLI while the dashboard
+focuses on monitoring.
 
 ## Requirements
 
@@ -113,15 +114,18 @@ allows and computes countdowns locally between API refreshes.
 
 The ESI API exposes the current skill queue, not an EVEMon-style saved skill
 plan. Saved plans will be local plugin data and will use ESI/SDE skill metadata
-for prerequisites, attributes, implants, and training estimates. Download the
-official skill catalog once before using plan estimates:
+for prerequisites, attributes, implants, training estimates, and in-game skill
+groups. Download the official skill catalog once before using plan estimates or
+grouped trained skills:
 
 ```bash
 python3 bin/omarchy-eve-monitor catalog-update
 python3 bin/omarchy-eve-monitor plan-add "PvE Core" 3300 5
 ```
 
-The dashboard's detail tabs load on demand. The same data can be inspected from
+The Training tab shows the current skill queue followed by trained skills
+grouped using EVE's in-game skill groups. The dashboard's detail tabs load on
+demand. The same data can be inspected from
 the backend for troubleshooting:
 
 ```bash
