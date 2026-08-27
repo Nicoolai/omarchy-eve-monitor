@@ -416,11 +416,38 @@ def collect_feature(client: EsiClient, key: str, loader, output: dict, errors: l
         output[key] = [] if key.endswith("s") else {}
 
 
+def wallet_cashflow(journal: list) -> dict:
+    income = 0.0
+    expenses = 0.0
+    by_day: dict[str, dict[str, float]] = {}
+    for entry in journal if isinstance(journal, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            amount = float(entry.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount >= 0:
+            income += amount
+        else:
+            expenses += abs(amount)
+        day = str(entry.get("date", ""))[:10]
+        if len(day) != 10:
+            continue
+        bucket = by_day.setdefault(day, {"income": 0.0, "expenses": 0.0})
+        if amount >= 0:
+            bucket["income"] += amount
+        else:
+            bucket["expenses"] += abs(amount)
+    days = [{"date": day, **values} for day, values in sorted(by_day.items())]
+    return {"income": income, "expenses": expenses, "net": income - expenses, "days": days}
+
+
 def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
     character_id = str(character.get("character_id", ""))
     groups = {
         "training": ["skills"],
-        "wealth": ["wallet", "assets"],
+        "wealth": ["wallet"],
         "industry_market": ["industry", "market"],
     }
     if feature in groups:
@@ -460,6 +487,20 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
         collect_feature(client, "wallet", lambda: client.get(f"{prefix}/wallet", ttl=120, force=force), data, errors)
         collect_feature(client, "journal", lambda: paged(client, f"{prefix}/wallet/journal", force=force), data, errors)
         collect_feature(client, "transactions", lambda: client.get(f"{prefix}/wallet/transactions", ttl=3600, force=force), data, errors)
+        data["cashflow"] = wallet_cashflow(data.get("journal", []))
+        transactions = data.get("transactions", [])
+        type_ids = [
+            int(item.get("type_id", 0))
+            for item in transactions if isinstance(item, dict) and str(item.get("type_id", "")).isdigit()
+        ] if isinstance(transactions, list) else []
+        try:
+            names = public_names(type_ids)
+        except MonitorError:
+            names = {}
+        data["transactions"] = [{
+            **item,
+            "typeName": names.get(str(item.get("type_id")), "Type " + str(item.get("type_id", "Unknown"))),
+        } for item in transactions if isinstance(item, dict)]
     elif feature == "assets":
         assets = paged(client, f"{prefix}/assets", force=force)
         ids = [int(item.get("type_id", 0)) for item in assets if str(item.get("type_id", "")).isdigit()]
@@ -520,7 +561,7 @@ def demo_detail(feature: str) -> dict:
     common = {"ok": True, "demo": True, "characterId": 90000001, "feature": feature, "errors": []}
     groups = {
         "training": ["skills"],
-        "wealth": ["wallet", "assets"],
+        "wealth": ["wallet"],
         "industry_market": ["industry", "market"],
     }
     if feature in groups:
@@ -535,7 +576,18 @@ def demo_detail(feature: str) -> dict:
             {"skill_id": 3301, "name": "Small Projectile Turret", "category": "Gunnery", "trained_skill_level": 4, "active_skill_level": 4, "skillpoints_in_skill": 45255},
         ]}
     elif feature == "wallet":
-        common["data"] = {"wallet": 425000000.12, "journal": [{"date": "2026-08-27T17:30:00Z", "ref_type": "market_transaction", "description": "Demo sale", "amount": 12500000, "balance": 425000000.12}], "transactions": [{"date": "2026-08-27T17:30:00Z", "type_id": 34, "quantity": 1000, "unit_price": 12500, "is_buy": False}]}
+        common["data"] = {
+            "wallet": 425000000.12,
+            "journal": [
+                {"date": "2026-08-27T17:30:00Z", "ref_type": "market_transaction", "description": "Demo sale", "amount": 12500000, "balance": 425000000.12},
+                {"date": "2026-08-26T12:00:00Z", "ref_type": "market_transaction", "description": "Demo purchase", "amount": -2500000, "balance": 412500000.12},
+            ],
+            "transactions": [{"date": "2026-08-27T17:30:00Z", "type_id": 34, "typeName": "Tritanium", "quantity": 1000, "unit_price": 12500, "is_buy": False}],
+            "cashflow": {"income": 12500000, "expenses": 2500000, "net": 10000000, "days": [
+                {"date": "2026-08-26", "income": 0, "expenses": 2500000},
+                {"date": "2026-08-27", "income": 12500000, "expenses": 0},
+            ]},
+        }
     elif feature == "assets":
         common["data"] = {"assets": [{"item_id": 1, "type_id": 24690, "typeName": "Hurricane Fleet Issue", "quantity": 1, "locationName": "Jita IV - Moon 4 - Caldari Navy Assembly Plant"}, {"item_id": 2, "type_id": 34, "typeName": "Tritanium", "quantity": 1000000, "locationName": "Jita IV - Moon 4"}]}
     elif feature == "industry":

@@ -104,7 +104,7 @@ Panel {
 
   function detailRows(view) {
     var data = root.detailPayload.data || {}
-    if (view === "wealth") return data.assets || []
+    if (view === "wealth") return []
     if (view === "industry_market") {
       var rows = (data.jobs || []).slice()
       ;(data.orders || []).forEach(function(order) {
@@ -117,6 +117,39 @@ Panel {
     }
     if (view === "activity") return data.notifications || []
     return data.implants || []
+  }
+
+  function walletFlowDays() {
+    var data = root.detailPayload.data || {}
+    return data.cashflow && data.cashflow.days ? data.cashflow.days : []
+  }
+
+  function walletFlowMax() {
+    var days = walletFlowDays()
+    var maximum = 0
+    for (var i = 0; i < days.length; i++) {
+      maximum = Math.max(maximum, Number(days[i].income) || 0, Number(days[i].expenses) || 0)
+    }
+    return maximum || 1
+  }
+
+  function walletDateLabel(value) {
+    var text = String(value || "")
+    return text.length >= 10 ? text.substring(5, 10) : text
+  }
+
+  function walletTimestampLabel(value) {
+    var text = String(value || "")
+    return text.length >= 16 ? text.substring(0, 16).replace("T", " ") : text
+  }
+
+  function walletAmount(value) {
+    var amount = Number(value) || 0
+    return (amount >= 0 ? "+" : "-") + Model.formatIsk(Math.abs(amount))
+  }
+
+  function walletTransactionTotal(transaction) {
+    return (Number(transaction.quantity) || 0) * (Number(transaction.unit_price) || 0)
   }
 
   function implantLabel(value) {
@@ -921,16 +954,217 @@ Panel {
             visible: root.activeView === "wealth" && !root.detailLoading
             Text { text: "BALANCE"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
             Text { text: root.detailPayload.data ? Model.formatIsk(root.detailPayload.data.wallet || 0) : ""; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body }
-            Text { text: "JOURNAL"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-            Text { text: root.detailPayload.data && root.detailPayload.data.journal ? root.detailPayload.data.journal.length + " recent entries" : ""; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body }
-            Text { text: "TRANSACTIONS"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-            Text { text: root.detailPayload.data && root.detailPayload.data.transactions ? root.detailPayload.data.transactions.length + " recent entries" : ""; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+            Text { text: "IN"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text { text: root.detailPayload.data && root.detailPayload.data.cashflow ? Model.formatIsk(root.detailPayload.data.cashflow.income || 0) : ""; color: root.accent; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+            Text { text: "OUT"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text { text: root.detailPayload.data && root.detailPayload.data.cashflow ? Model.formatIsk(root.detailPayload.data.cashflow.expenses || 0) : ""; color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+            Text { text: "NET"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+            Text {
+              text: root.detailPayload.data && root.detailPayload.data.cashflow ? walletAmount(root.detailPayload.data.cashflow.net || 0) : ""
+              color: root.detailPayload.data && root.detailPayload.data.cashflow && Number(root.detailPayload.data.cashflow.net || 0) < 0 ? Color.urgent : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.activeView === "wealth" && !root.detailLoading
+            text: "CASH FLOW  |  LAST 30 DAYS"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Item {
+            id: walletChart
+            width: parent.width
+            height: Style.space(130)
+            visible: root.activeView === "wealth" && !root.detailLoading && root.walletFlowDays().length > 0
+
+            Rectangle {
+              id: cashflowZero
+              anchors.left: parent.left
+              anchors.right: parent.right
+              y: Style.space(51)
+              height: 1
+              color: root.dim
+              opacity: 0.7
+            }
+            Row {
+              id: cashflowBars
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.top: parent.top
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: Style.space(24)
+              spacing: Style.space(2)
+              Repeater {
+                model: root.walletFlowDays()
+                Item {
+                  required property var modelData
+                  width: Math.max(Style.space(4), (cashflowBars.width - Style.space(2) * Math.max(0, root.walletFlowDays().length - 1)) / Math.max(1, root.walletFlowDays().length))
+                  height: parent.height
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: cashflowZero.top
+                    width: Math.max(1, parent.width - Style.space(4))
+                    height: Math.min(Style.space(43), Style.space(43) * (Number(modelData.income) || 0) / root.walletFlowMax())
+                    color: root.accent
+                    visible: height > 0
+                  }
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: cashflowZero.bottom
+                    width: Math.max(1, parent.width - Style.space(4))
+                    height: Math.min(Style.space(43), Style.space(43) * (Number(modelData.expenses) || 0) / root.walletFlowMax())
+                    color: Color.urgent
+                    visible: height > 0
+                  }
+                }
+              }
+            }
+            Text {
+              anchors.left: parent.left
+              anchors.bottom: parent.bottom
+              text: root.walletFlowDays().length > 0 ? walletDateLabel(root.walletFlowDays()[0].date) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Text {
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              text: root.walletFlowDays().length > 0 ? walletDateLabel(root.walletFlowDays()[root.walletFlowDays().length - 1].date) : ""
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.activeView === "wealth" && !root.detailLoading
+            text: "WALLET JOURNAL"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          ListView {
+            id: walletJournalList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(240))
+            visible: root.activeView === "wealth" && !root.detailLoading && root.detailPayload.data && root.detailPayload.data.journal && root.detailPayload.data.journal.length > 0
+            model: root.detailPayload.data && root.detailPayload.data.journal ? root.detailPayload.data.journal : []
+            clip: true
+            spacing: Style.space(2)
+            delegate: Item {
+              required property var modelData
+              width: walletJournalList.width
+              height: Style.space(42)
+              Text {
+                anchors.left: parent.left
+                anchors.right: journalAmount.left
+                anchors.top: parent.top
+                text: modelData.description || modelData.ref_type || "Wallet entry"
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.right: journalAmount.left
+                anchors.bottom: parent.bottom
+                text: root.walletTimestampLabel(modelData.date) + "  |  " + (modelData.ref_type || "")
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              Text {
+                id: journalAmount
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(150)
+                text: root.walletAmount(modelData.amount)
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignRight
+                color: Number(modelData.amount) >= 0 ? root.accent : Color.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.activeView === "wealth" && !root.detailLoading
+            text: "TRANSACTIONS"
+            textFormat: Text.PlainText
+            color: root.accent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          ListView {
+            id: walletTransactionList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(200))
+            visible: root.activeView === "wealth" && !root.detailLoading && root.detailPayload.data && root.detailPayload.data.transactions && root.detailPayload.data.transactions.length > 0
+            model: root.detailPayload.data && root.detailPayload.data.transactions ? root.detailPayload.data.transactions : []
+            clip: true
+            spacing: Style.space(2)
+            delegate: Item {
+              required property var modelData
+              width: walletTransactionList.width
+              height: Style.space(42)
+              Text {
+                anchors.left: parent.left
+                anchors.right: transactionTotal.left
+                anchors.top: parent.top
+                text: (modelData.is_buy ? "BUY  " : "SELL  ") + (modelData.typeName || ("Type " + (modelData.type_id || "Unknown")))
+                textFormat: Text.PlainText
+                color: modelData.is_buy ? Color.urgent : root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.right: transactionTotal.left
+                anchors.bottom: parent.bottom
+                text: Model.formatNumber(modelData.quantity || 0) + " units  |  " + root.walletTimestampLabel(modelData.date)
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              Text {
+                id: transactionTotal
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(150)
+                text: Model.formatIsk(root.walletTransactionTotal(modelData))
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignRight
+                color: modelData.is_buy ? Color.urgent : root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
           }
 
           ListView {
             width: parent.width
             height: Math.min(contentHeight, Style.space(400))
-            visible: ["wealth", "industry_market", "activity", "character"].indexOf(root.activeView) >= 0 && !root.detailLoading
+            visible: ["industry_market", "activity", "character"].indexOf(root.activeView) >= 0 && !root.detailLoading
             model: root.detailRows(root.activeView)
             clip: true
             spacing: Style.space(2)

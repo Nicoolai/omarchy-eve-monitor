@@ -89,6 +89,16 @@ class BackendTests(unittest.TestCase):
             {"typeId": 9942, "name": "High-grade Snake Beta"},
         ])
 
+    def test_wallet_cashflow_summarizes_signed_journal_entries(self):
+        summary = eve_monitor.wallet_cashflow([
+            {"date": "2026-08-27T12:00:00Z", "amount": 12500000},
+            {"date": "2026-08-27T13:00:00Z", "amount": -2500000},
+        ])
+        self.assertEqual(summary["income"], 12500000)
+        self.assertEqual(summary["expenses"], 2500000)
+        self.assertEqual(summary["net"], 10000000)
+        self.assertEqual(summary["days"], [{"date": "2026-08-27", "income": 12500000, "expenses": 2500000}])
+
     def test_plan_prerequisites_merge_to_highest_level(self):
         catalog = {"skills": {
             "10": {"requirements": [{"skillId": 20, "level": 2}]},
@@ -151,6 +161,11 @@ class BackendTests(unittest.TestCase):
     def test_demo_training_skills_include_categories(self):
         payload = eve_monitor.demo_detail("training")
         self.assertTrue(all(item.get("category") for item in payload["data"]["skills"]))
+
+    def test_demo_wealth_is_wallet_focused(self):
+        payload = eve_monitor.demo_detail("wealth")
+        self.assertNotIn("assets", payload["data"])
+        self.assertIn("cashflow", payload["data"])
 
     def test_demo_detail_rejects_unknown_feature(self):
         with self.assertRaises(eve_monitor.MonitorError):
