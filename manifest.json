@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.nicoolai.eve-monitor",
+  "name": "EVE Online Monitor",
+  "version": "0.1.0",
+  "author": "nicoolai",
+  "homepage": "https://github.com/nicoolai/omarchy-eve-monitor",
+  "repository": "https://github.com/nicoolai/omarchy-eve-monitor",
+  "license": "MIT",
+  "description": "EVE Online skill training, character stats, and wallet data in the Omarchy bar.",
+  "keywords": ["eve", "evemon", "skills", "training", "wallet", "bar"],
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "EVE Online Monitor",
+    "description": "Monitor skill queues and character data for all your EVE characters.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 120,
+      "barMode": "Selected character",
+      "showCharacterName": false
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval in seconds",
+        "defaultValue": 120,
+        "min": 60,
+        "max": 1800,
+        "step": 30
+      },
+      {
+        "key": "barMode",
+         "type": "enum",
+         "label": "Bar countdown",
+         "options": ["Selected character", "Soonest active", "Automatic"],
+         "defaultValue": "Selected character",
+         "description": "Choose which character determines the countdown shown in the top bar."
+      },
+      {
+        "key": "showCharacterName",
+        "type": "boolean",
+        "label": "Show the character name in the bar",
+        "defaultValue": false
+      }
+    ]
+  }
+}

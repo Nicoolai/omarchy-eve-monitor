@@ -1,0 +1,926 @@
+#!/usr/bin/env python3
+"""Small, dependency-free EVE Online ESI client for the Omarchy widget.
+
+The command prints one JSON document and exits. Credentials are kept in the
+private config directory and are never accepted as command-line arguments.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import math
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+
+APP_NAME = "omarchy-eve-monitor"
+ESI_BASE = "https://esi.evetech.net/latest"
+SSO_AUTHORIZE = "https://login.eveonline.com/v2/oauth/authorize"
+SSO_TOKEN = "https://login.eveonline.com/v2/oauth/token"
+SSO_VERIFY = "https://login.eveonline.com/v2/oauth/verify"
+DEFAULT_CLIENT_ID = "60d5e8746337487c92d926c75a63f8bd"
+DEFAULT_REDIRECT_URI = "http://127.0.0.1:48173/callback"
+USER_AGENT = "EVEOnlineMonitor/0.1.0 (+https://github.com/nicoolai/omarchy-eve-monitor)"
+
+ROOT = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / APP_NAME
+CACHE_ROOT = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / APP_NAME
+CONFIG_FILE = ROOT / "config.json"
+STATE_FILE = ROOT / "state.json"
+DEMO_FILE = CACHE_ROOT / "demo"
+CATALOG_FILE = CACHE_ROOT / "skill-catalog.json"
+SDE_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
+
+
+class MonitorError(Exception):
+    pass
+
+
+def emit(payload: dict, exit_code: int = 0) -> None:
+    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
+    raise SystemExit(exit_code)
+
+
+def private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise MonitorError(f"private directory is not usable: {path}")
+    try:
+        path.chmod(0o700)
+    except OSError as error:
+        raise MonitorError(f"cannot secure {path}: {error}") from error
+
+
+def safe_read_json(path: Path, fallback: dict) -> dict:
+    if path.is_symlink() or not path.is_file():
+        return dict(fallback)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else dict(fallback)
+    except (OSError, ValueError):
+        return dict(fallback)
+
+
+def write_json(path: Path, payload: dict) -> None:
+    private_directory(path.parent)
+    if path.is_symlink():
+        raise MonitorError(f"refusing to overwrite symlink: {path}")
+    contents = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(contents)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def config() -> dict:
+    return safe_read_json(CONFIG_FILE, {
+        "client_id": DEFAULT_CLIENT_ID,
+        "redirect_uri": DEFAULT_REDIRECT_URI,
+    })
+
+
+def state() -> dict:
+    data = safe_read_json(STATE_FILE, {
+        "selectedCharacterId": "",
+        "characters": [],
+        "plans": [],
+    })
+    if not isinstance(data.get("characters"), list):
+        data["characters"] = []
+    if not isinstance(data.get("plans"), list):
+        data["plans"] = []
+    return data
+
+
+def client_id() -> str:
+    override = os.environ.get("OMARCHY_EVE_CLIENT_ID", "").strip()
+    configured = str(config().get("client_id", "")).strip()
+    return override or configured or DEFAULT_CLIENT_ID
+
+
+def now_epoch() -> int:
+    return int(time.time())
+
+
+def iso_epoch(value: object) -> int:
+    if not value:
+        return 0
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return int(datetime.fromisoformat(text).timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def skill_points_for_level(rank: int, level: int) -> int:
+    """Return the game's cumulative SP threshold without float drift."""
+    rank = max(1, int(rank))
+    level = max(0, min(5, int(level)))
+    if level == 0:
+        return 0
+    # The client uses the game's nearest-integer thresholds. Rounding also
+    # avoids a binary-float artifact turning the exact level-five value of
+    # 256000 into 256001.
+    return int(round(250 * rank * math.sqrt(32) ** (level - 1)))
+
+
+def load_catalog() -> dict:
+    data = safe_read_json(CATALOG_FILE, {"skills": {}})
+    return data if isinstance(data.get("skills"), dict) else {"skills": {}}
+
+
+def catalog_records(archive: zipfile.ZipFile, filename: str) -> list[dict]:
+    entry = next((name for name in archive.namelist() if name.endswith("/" + filename) or name == filename), None)
+    if not entry:
+        raise MonitorError(f"SDE archive is missing {filename}")
+    records = []
+    with archive.open(entry) as stream:
+        for raw in stream:
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
+
+
+def update_catalog() -> dict:
+    private_directory(CACHE_ROOT)
+    descriptor, temporary_name = tempfile.mkstemp(prefix="sde.", dir=CACHE_ROOT)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        request = urllib.request.Request(SDE_URL, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as target:
+            shutil.copyfileobj(response, target)
+        with zipfile.ZipFile(temporary) as archive:
+            groups = {
+                int(record["_key"])
+                for record in catalog_records(archive, "groups.jsonl")
+                if record.get("categoryID") == 16 and str(record.get("_key", "")).isdigit()
+            }
+            types = {
+                int(record["_key"]): record
+                for record in catalog_records(archive, "types.jsonl")
+                if record.get("groupID") in groups and record.get("published") is True
+                and str(record.get("_key", "")).isdigit()
+            }
+            dogma = {
+                int(record["_key"]): record
+                for record in catalog_records(archive, "typeDogma.jsonl")
+                if str(record.get("_key", "")).isdigit()
+            }
+        skills = {}
+        for skill_id, record in types.items():
+            attributes = {
+                int(item["attributeID"]): item.get("value")
+                for item in dogma.get(skill_id, {}).get("dogmaAttributes", [])
+                if str(item.get("attributeID", "")).isdigit()
+            }
+            name = record.get("name", "")
+            if isinstance(name, dict):
+                name = name.get("en", "")
+            requirements = []
+            for skill_slot in (1, 2, 3):
+                required_id = attributes.get(181 + skill_slot)
+                required_level = attributes.get(276 + skill_slot)
+                if required_id is not None and required_level is not None:
+                    requirements.append({"skillId": int(required_id), "level": int(required_level)})
+            skills[str(skill_id)] = {
+                "name": str(name),
+                "rank": int(attributes.get(275, 1) or 1),
+                "primary": int(attributes.get(180, 166) or 166),
+                "secondary": int(attributes.get(181, 165) or 165),
+                "requirements": requirements,
+            }
+        payload = {"source": SDE_URL, "updatedAt": now_epoch(), "skills": skills}
+        write_json(CATALOG_FILE, payload)
+        return {"ok": True, "skills": len(skills), "path": str(CATALOG_FILE)}
+    except (OSError, urllib.error.URLError, zipfile.BadZipFile, KeyError, ValueError) as error:
+        raise MonitorError(f"could not update skill catalog: {error}") from error
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def expanded_plan(skills: list, catalog: dict) -> dict[int, int]:
+    expanded: dict[int, int] = {}
+
+    def add(skill_id: int, level: int, active: set[int]) -> None:
+        if skill_id in active:
+            return
+        expanded[skill_id] = max(level, expanded.get(skill_id, 0))
+        metadata = catalog.get("skills", {}).get(str(skill_id), {})
+        next_active = active | {skill_id}
+        for requirement in metadata.get("requirements", []):
+            add(int(requirement["skillId"]), int(requirement["level"]), next_active)
+
+    for item in skills if isinstance(skills, list) else []:
+        if str(item.get("skillId", "")).isdigit():
+            add(int(item["skillId"]), max(1, min(5, int(item.get("targetLevel", 1)))), set())
+    return expanded
+
+
+def plan_eta(character_output: dict, plans: list) -> tuple[int | None, str]:
+    applicable = [plan for plan in plans if not plan.get("characterId") or str(plan.get("characterId")) == str(character_output.get("characterId"))]
+    if not applicable:
+        return 0, ""
+    catalog = load_catalog()
+    if not catalog.get("skills"):
+        return None, "Skill catalog not installed; run: python3 bin/omarchy-eve-monitor catalog-update"
+    current = {
+        str(item.get("skill_id")): int(item.get("skillpoints_in_skill", 0) or 0)
+        for item in character_output.get("skills", [])
+    }
+    attributes = character_output.get("attributes", {})
+    total_seconds = 0.0
+    for plan in applicable:
+        targets = expanded_plan(plan.get("skills", []), catalog)
+        for skill_id, level in targets.items():
+            metadata = catalog["skills"].get(str(skill_id))
+            if not metadata:
+                continue
+            required = skill_points_for_level(metadata["rank"], level)
+            remaining = max(0, required - current.get(str(skill_id), 0))
+            primary = {164: "charisma", 165: "intelligence", 166: "memory", 167: "perception", 168: "willpower"}.get(metadata["primary"], "intelligence")
+            secondary = {164: "charisma", 165: "intelligence", 166: "memory", 167: "perception", 168: "willpower"}.get(metadata["secondary"], "memory")
+            rate = float(attributes.get(primary, 20) or 20) + float(attributes.get(secondary, 20) or 20) / 2
+            if rate > 0:
+                total_seconds += remaining / rate * 60
+    # Do not turn an exact whole-second estimate into the next second because
+    # of binary floating-point representation.
+    return max(0, int(math.ceil(total_seconds - 1e-9))), ""
+
+
+def json_request(url: str, *, method: str = "GET", data: bytes | None = None,
+                 headers: dict[str, str] | None = None, timeout: int = 15) -> tuple[dict | list, dict]:
+    request = urllib.request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            return json.loads(raw.decode("utf-8")), dict(response.headers.items())
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(body)
+        except ValueError:
+            detail = {}
+        raise MonitorError(f"HTTP {error.code}: {detail.get('error_description') or detail.get('error') or error.reason}") from error
+    except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        raise MonitorError(f"network request failed: {error}") from error
+
+
+def cache_path(character_id: str, key: str) -> Path:
+    if not character_id.isdigit():
+        raise MonitorError("invalid character id")
+    safe_key = "".join(char if char.isalnum() else "_" for char in key)
+    return CACHE_ROOT / character_id / f"{safe_key}.json"
+
+
+def cached_payload(character_id: str, key: str) -> dict | None:
+    path = cache_path(character_id, key)
+    data = safe_read_json(path, {})
+    return data if "payload" in data else None
+
+
+class EsiClient:
+    def __init__(self, character: dict):
+        self.character = character
+
+    def access_token(self) -> str:
+        token = str(self.character.get("access_token", ""))
+        expires = int(self.character.get("expires_at", 0) or 0)
+        if token and expires > now_epoch() + 60:
+            return token
+        refresh = str(self.character.get("refresh_token", ""))
+        if not refresh:
+            raise MonitorError("character authorization has expired")
+        cid = client_id()
+        if not cid:
+            raise MonitorError("client_id is not configured")
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": cid,
+        }).encode()
+        payload, _ = json_request(SSO_TOKEN, method="POST", data=body, headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+        })
+        self.character["access_token"] = str(payload.get("access_token", ""))
+        self.character["expires_at"] = now_epoch() + int(payload.get("expires_in", 1200) or 1200)
+        if payload.get("refresh_token"):
+            self.character["refresh_token"] = payload["refresh_token"]
+        if not self.character["access_token"]:
+            raise MonitorError("token refresh returned no access token")
+        return self.character["access_token"]
+
+    def get(self, path: str, *, ttl: int, authenticated: bool = True,
+            force: bool = False) -> dict | list:
+        character_id = str(self.character.get("character_id", "0"))
+        key = path.strip("/").replace("/", "_")
+        cached = cached_payload(character_id, key)
+        fetched = int(cached.get("fetched_at", 0)) if cached else 0
+        if cached and not force and now_epoch() - fetched < ttl:
+            return cached["payload"]
+
+        headers = {"User-Agent": USER_AGENT, "X-Compatibility-Date": "2026-08-27"}
+        if cached and cached.get("etag"):
+            headers["If-None-Match"] = str(cached["etag"])
+        if cached and cached.get("last_modified"):
+            headers["If-Modified-Since"] = str(cached["last_modified"])
+        if authenticated:
+            headers["Authorization"] = f"Bearer {self.access_token()}"
+
+        url = ESI_BASE + "/" + path.strip("/")
+        try:
+            payload, response_headers = json_request(url, headers=headers)
+        except MonitorError as error:
+            if authenticated and "HTTP 401" in str(error):
+                # A revoked token can fail before its local expiry. Clear it so
+                # access_token() performs one refresh, then retry once.
+                self.character["access_token"] = ""
+                self.character["expires_at"] = 0
+                headers["Authorization"] = f"Bearer {self.access_token()}"
+                payload, response_headers = json_request(url, headers=headers)
+            elif "HTTP 304" in str(error) and cached:
+                cached["fetched_at"] = now_epoch()
+                write_json(cache_path(character_id, key), cached)
+                return cached["payload"]
+            else:
+                raise
+
+        envelope = {
+            "fetched_at": now_epoch(),
+            "payload": payload,
+            "etag": response_headers.get("ETag", cached.get("etag", "") if cached else ""),
+            "last_modified": response_headers.get("Last-Modified", cached.get("last_modified", "") if cached else ""),
+        }
+        write_json(cache_path(character_id, key), envelope)
+        return payload
+
+
+def public_names(ids: list[int]) -> dict[str, str]:
+    unique = sorted({int(value) for value in ids if str(value).isdigit()})[:1000]
+    if not unique:
+        return {}
+    body = json.dumps(unique, separators=(",", ":")).encode()
+    payload, _ = json_request(ESI_BASE + "/universe/names", method="POST", data=body, headers={
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+        "X-Compatibility-Date": "2026-08-27",
+    })
+    return {str(item["id"]): str(item["name"]) for item in payload if isinstance(item, dict) and "id" in item}
+
+
+def paged(client: EsiClient, path: str, *, force: bool = False, max_pages: int = 20) -> list:
+    records = []
+    for page in range(1, max_pages + 1):
+        payload = client.get(f"{path}?page={page}", ttl=3600, force=force)
+        if not isinstance(payload, list):
+            break
+        records.extend(payload)
+        if len(payload) < 1000:
+            break
+    return records
+
+
+def collect_feature(client: EsiClient, key: str, loader, output: dict, errors: list[str]) -> None:
+    try:
+        output[key] = loader()
+    except MonitorError as error:
+        errors.append(f"{key}: {error}")
+        output[key] = [] if key.endswith("s") else {}
+
+
+def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
+    character_id = str(character.get("character_id", ""))
+    groups = {
+        "training": ["skills"],
+        "wealth": ["wallet", "assets"],
+        "industry_market": ["industry", "market"],
+    }
+    if feature in groups:
+        data: dict = {}
+        errors: list[str] = []
+        for child in groups[feature]:
+            result = detail_snapshot(character, child, force)
+            data.update(result["data"])
+            errors.extend(result["errors"])
+        return {"ok": True, "characterId": int(character_id), "feature": feature, "data": data, "errors": errors}
+
+    client = EsiClient(character)
+    data: dict = {}
+    errors: list[str] = []
+    prefix = f"characters/{character_id}"
+
+    if feature == "skills":
+        skills = client.get(f"{prefix}/skills", ttl=60, force=force)
+        catalog = load_catalog().get("skills", {})
+        skill_ids = [int(item.get("skill_id", 0)) for item in skills.get("skills", []) if str(item.get("skill_id", "")).isdigit()]
+        names = {skill_id: catalog.get(str(skill_id), {}).get("name", "") for skill_id in skill_ids}
+        missing = [skill_id for skill_id in skill_ids if not names.get(skill_id)]
+        try:
+            names.update({int(key): value for key, value in public_names(missing).items()})
+        except MonitorError:
+            pass
+        data = {
+            "totalSp": skills.get("total_sp", 0),
+            "unallocatedSp": skills.get("unallocated_sp", 0),
+            "skills": [{**item, "name": names.get(int(item.get("skill_id", 0)), "Unknown skill")} for item in skills.get("skills", [])],
+        }
+    elif feature == "wallet":
+        collect_feature(client, "wallet", lambda: client.get(f"{prefix}/wallet", ttl=120, force=force), data, errors)
+        collect_feature(client, "journal", lambda: paged(client, f"{prefix}/wallet/journal", force=force), data, errors)
+        collect_feature(client, "transactions", lambda: client.get(f"{prefix}/wallet/transactions", ttl=3600, force=force), data, errors)
+    elif feature == "assets":
+        assets = paged(client, f"{prefix}/assets", force=force)
+        ids = [int(item.get("type_id", 0)) for item in assets if str(item.get("type_id", "")).isdigit()]
+        ids += [int(item.get("location_id", 0)) for item in assets if str(item.get("location_id", "")).isdigit()]
+        try:
+            names = public_names(ids)
+        except MonitorError:
+            names = {}
+        data["assets"] = [{**item, "typeName": names.get(str(item.get("type_id")), "Unknown type"), "locationName": names.get(str(item.get("location_id")), "Unknown location")} for item in assets]
+    elif feature == "industry":
+        collect_feature(client, "jobs", lambda: client.get(f"{prefix}/industry/jobs", ttl=300, force=force), data, errors)
+        collect_feature(client, "blueprints", lambda: paged(client, f"{prefix}/blueprints", force=force), data, errors)
+        collect_feature(client, "planets", lambda: client.get(f"{prefix}/planets", ttl=600, force=force), data, errors)
+        collect_feature(client, "mining", lambda: paged(client, f"{prefix}/mining", force=force), data, errors)
+        collect_feature(client, "research", lambda: client.get(f"{prefix}/agents_research", ttl=3600, force=force), data, errors)
+    elif feature == "market":
+        collect_feature(client, "orders", lambda: client.get(f"{prefix}/orders", ttl=1200, force=force), data, errors)
+        collect_feature(client, "orderHistory", lambda: paged(client, f"{prefix}/orders/history", force=force), data, errors)
+        collect_feature(client, "contracts", lambda: paged(client, f"{prefix}/contracts", force=force), data, errors)
+    elif feature == "activity":
+        collect_feature(client, "notifications", lambda: client.get(f"{prefix}/notifications", ttl=600, force=force), data, errors)
+        collect_feature(client, "mail", lambda: client.get(f"{prefix}/mail", ttl=30, force=force), data, errors)
+        collect_feature(client, "calendar", lambda: client.get(f"{prefix}/calendar", ttl=5, force=force), data, errors)
+        collect_feature(client, "killmails", lambda: paged(client, f"{prefix}/killmails/recent", force=force), data, errors)
+    elif feature == "character":
+        collect_feature(client, "clones", lambda: client.get(f"{prefix}/clones", ttl=120, force=force), data, errors)
+        collect_feature(client, "implants", lambda: client.get(f"{prefix}/implants", ttl=120, force=force), data, errors)
+        collect_feature(client, "fatigue", lambda: client.get(f"{prefix}/fatigue", ttl=300, force=force), data, errors)
+        collect_feature(client, "standings", lambda: client.get(f"{prefix}/standings", ttl=3600, force=force), data, errors)
+        collect_feature(client, "loyalty", lambda: client.get(f"{prefix}/loyalty/points", ttl=3600, force=force), data, errors)
+        collect_feature(client, "roles", lambda: client.get(f"{prefix}/roles", ttl=3600, force=force), data, errors)
+        collect_feature(client, "titles", lambda: client.get(f"{prefix}/titles", ttl=3600, force=force), data, errors)
+        collect_feature(client, "medals", lambda: client.get(f"{prefix}/medals", ttl=3600, force=force), data, errors)
+        collect_feature(client, "fittings", lambda: client.get(f"{prefix}/fittings", ttl=300, force=force), data, errors)
+    else:
+        raise MonitorError("unknown detail feature")
+    return {"ok": True, "characterId": int(character_id), "feature": feature, "data": data, "errors": errors}
+
+
+def demo_detail(feature: str) -> dict:
+    common = {"ok": True, "demo": True, "characterId": 90000001, "feature": feature, "errors": []}
+    groups = {
+        "training": ["skills"],
+        "wealth": ["wallet", "assets"],
+        "industry_market": ["industry", "market"],
+    }
+    if feature in groups:
+        common["data"] = {}
+        for child in groups[feature]:
+            common["data"].update(demo_detail(child)["data"])
+        return common
+
+    if feature == "skills":
+        common["data"] = {"totalSp": 112345678, "unallocatedSp": 0, "skills": [
+            {"skill_id": 3300, "name": "Gunnery", "trained_skill_level": 5, "active_skill_level": 5, "skillpoints_in_skill": 256000},
+            {"skill_id": 3301, "name": "Small Projectile Turret", "trained_skill_level": 4, "active_skill_level": 4, "skillpoints_in_skill": 45255},
+        ]}
+    elif feature == "wallet":
+        common["data"] = {"wallet": 425000000.12, "journal": [{"date": "2026-08-27T17:30:00Z", "ref_type": "market_transaction", "description": "Demo sale", "amount": 12500000, "balance": 425000000.12}], "transactions": [{"date": "2026-08-27T17:30:00Z", "type_id": 34, "quantity": 1000, "unit_price": 12500, "is_buy": False}]}
+    elif feature == "assets":
+        common["data"] = {"assets": [{"item_id": 1, "type_id": 24690, "typeName": "Hurricane Fleet Issue", "quantity": 1, "locationName": "Jita IV - Moon 4 - Caldari Navy Assembly Plant"}, {"item_id": 2, "type_id": 34, "typeName": "Tritanium", "quantity": 1000000, "locationName": "Jita IV - Moon 4"}]}
+    elif feature == "industry":
+        common["data"] = {"jobs": [{"job_id": 1, "activity_id": 5, "product_type_id": 24690, "status": "active", "end_date": "2026-08-28T12:00:00Z"}], "blueprints": [], "planets": [], "mining": [], "research": []}
+    elif feature == "market":
+        common["data"] = {"orders": [{"order_id": 1, "type_id": 34, "price": 12.5, "volume_remain": 500000, "volume_total": 1000000, "is_buy_order": True}], "orderHistory": [], "contracts": []}
+    elif feature == "activity":
+        common["data"] = {"notifications": [{"notification_id": 1, "type": "SkillFinished", "timestamp": "2026-08-27T16:00:00Z", "is_read": False}], "mail": [], "calendar": [], "killmails": []}
+    elif feature == "character":
+        common["data"] = {"clones": {"home_location": {"location_id": 60003760}}, "implants": [9941, 9942], "fatigue": {}, "standings": [], "loyalty": [], "roles": [], "titles": [], "medals": [], "fittings": []}
+    else:
+        raise MonitorError("unknown detail feature")
+    return common
+
+
+def character_identity(character_id: str, name: str = "") -> dict:
+    return {
+        "characterId": int(character_id),
+        "name": name or f"Character {character_id}",
+        "portrait": f"https://images.evetech.net/characters/{character_id}/portrait?size=64",
+    }
+
+
+def queue_snapshot(client: EsiClient, queue: list, force: bool) -> tuple[list, str, int, int]:
+    timestamp = now_epoch()
+    result = []
+    names: dict[int, str] = {}
+    for entry in sorted(queue if isinstance(queue, list) else [], key=lambda item: item.get("queue_position", 0)):
+        skill_id = int(entry.get("skill_id", 0) or 0)
+        if skill_id and skill_id not in names:
+            try:
+                skill = client.get(f"universe/types/{skill_id}", ttl=604800, authenticated=False, force=force)
+                names[skill_id] = str(skill.get("name", ""))
+            except MonitorError:
+                names[skill_id] = ""
+        finish_date = str(entry.get("finish_date", ""))
+        start_date = str(entry.get("start_date", ""))
+        result.append({
+            "queuePosition": int(entry.get("queue_position", 0) or 0),
+            "skillId": skill_id,
+            "skillName": names.get(skill_id, ""),
+            "finishedLevel": int(entry.get("finished_level", 0) or 0),
+            "startDate": start_date,
+            "finishDate": finish_date,
+            "remainingSeconds": max(0, iso_epoch(finish_date) - timestamp),
+        })
+
+    active = next((entry for entry in result if entry["finishDate"] and iso_epoch(entry["finishDate"]) > timestamp), None)
+    future = [entry for entry in result if entry["finishDate"] and iso_epoch(entry["finishDate"]) > timestamp]
+    last_finish = max((iso_epoch(entry["finishDate"]) for entry in future), default=0)
+    return result, (active["skillName"] if active else ""), (active["remainingSeconds"] if active else 0), max(0, last_finish - timestamp)
+
+
+def character_snapshot(character: dict, force: bool, plans: list | None = None) -> dict:
+    character_id = str(character.get("character_id", ""))
+    client = EsiClient(character)
+    output = character_identity(character_id, str(character.get("name", "")))
+    output["errors"] = []
+    try:
+        profile = client.get(f"characters/{character_id}", ttl=86400, authenticated=False, force=force)
+        output["corporationId"] = profile.get("corporation_id")
+        output["allianceId"] = profile.get("alliance_id")
+        output["securityStatus"] = profile.get("security_status")
+        corporation_id = profile.get("corporation_id")
+        if corporation_id:
+            try:
+                corporation = client.get(f"corporations/{int(corporation_id)}", ttl=3600, authenticated=False, force=force)
+                output["corporationName"] = corporation.get("name", "")
+                output["corporationTicker"] = corporation.get("ticker", "")
+            except (MonitorError, ValueError):
+                output["corporationName"] = ""
+        alliance_id = profile.get("alliance_id")
+        if alliance_id:
+            try:
+                alliance = client.get(f"alliances/{int(alliance_id)}", ttl=3600, authenticated=False, force=force)
+                output["allianceName"] = alliance.get("name", "")
+                output["allianceTicker"] = alliance.get("ticker", "")
+            except (MonitorError, ValueError):
+                output["allianceName"] = ""
+    except MonitorError as error:
+        output["errors"].append(f"profile: {error}")
+
+    try:
+        skills = client.get(f"characters/{character_id}/skills", ttl=60, force=force)
+        output["totalSp"] = int(skills.get("total_sp", 0) or 0)
+        output["unallocatedSp"] = int(skills.get("unallocated_sp", 0) or 0)
+        output["skills"] = skills.get("skills", [])
+    except MonitorError as error:
+        output["errors"].append(f"skills: {error}")
+        output["skills"] = []
+
+    try:
+        queue = client.get(f"characters/{character_id}/skillqueue", ttl=60, force=force)
+        output["queue"], output["currentSkillName"], output["remainingSeconds"], output["queueRemainingSeconds"] = queue_snapshot(client, queue, force)
+    except MonitorError as error:
+        output["errors"].append(f"queue: {error}")
+        output["queue"] = []
+        output["currentSkillName"] = ""
+        output["remainingSeconds"] = 0
+        output["queueRemainingSeconds"] = 0
+
+    try:
+        attributes = client.get(f"characters/{character_id}/attributes", ttl=120, force=force)
+        output["attributes"] = attributes
+    except MonitorError as error:
+        output["errors"].append(f"attributes: {error}")
+        output["attributes"] = {}
+
+    try:
+        output["wallet"] = float(client.get(f"characters/{character_id}/wallet", ttl=120, force=force))
+    except MonitorError as error:
+        output["errors"].append(f"wallet: {error}")
+        output["wallet"] = 0
+
+    try:
+        online = client.get(f"characters/{character_id}/online", ttl=60, force=force)
+        output["online"] = online.get("online") is True
+        output["lastLogin"] = online.get("last_login", "")
+        output["lastLogout"] = online.get("last_logout", "")
+    except MonitorError as error:
+        output["errors"].append(f"online: {error}")
+        output["online"] = False
+
+    try:
+        location = client.get(f"characters/{character_id}/location", ttl=5, force=force)
+        output["location"] = location
+        solar_system_id = location.get("solar_system_id")
+        if solar_system_id:
+            try:
+                system = client.get(f"universe/systems/{int(solar_system_id)}", ttl=604800, authenticated=False, force=force)
+                output["solarSystemName"] = system.get("name", "")
+            except (MonitorError, ValueError):
+                output["solarSystemName"] = ""
+    except MonitorError as error:
+        output["errors"].append(f"location: {error}")
+        output["location"] = {}
+
+    try:
+        ship = client.get(f"characters/{character_id}/ship", ttl=5, force=force)
+        output["ship"] = ship
+        ship_type_id = ship.get("ship_type_id")
+        if ship_type_id:
+            try:
+                ship_type = client.get(f"universe/types/{int(ship_type_id)}", ttl=604800, authenticated=False, force=force)
+                output["shipName"] = ship_type.get("name", "")
+            except (MonitorError, ValueError):
+                output["shipName"] = ""
+    except MonitorError as error:
+        output["errors"].append(f"ship: {error}")
+        output["ship"] = {}
+
+    output["planEtaSeconds"], output["planError"] = plan_eta(output, plans or [])
+    output["error"] = "; ".join(output["errors"])
+    del output["errors"]
+    character["name"] = output["name"]
+    return output
+
+
+def demo_snapshot() -> dict:
+    timestamp = now_epoch()
+    def demo_character(character_id: int, name: str, seconds: int, skill: str, online: bool) -> dict:
+        finish = datetime.fromtimestamp(timestamp + seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+        return {
+            **character_identity(str(character_id), name),
+            "online": online,
+            "totalSp": 112345678 if character_id % 2 else 87654321,
+            "unallocatedSp": 0,
+            "wallet": 425000000.12 if character_id % 2 else 9125000,
+            "currentSkillName": skill,
+            "remainingSeconds": seconds,
+            "queueRemainingSeconds": seconds + 86400,
+            "planEtaSeconds": seconds + 4 * 86400,
+            "planError": "",
+            "queue": [{"queuePosition": 0, "skillName": skill, "finishedLevel": 5, "finishDate": finish, "remainingSeconds": seconds}],
+            "attributes": {"intelligence": 27, "memory": 21, "perception": 24, "willpower": 23, "charisma": 17},
+            "error": "",
+        }
+    return {
+        "ok": True,
+        "demo": True,
+        "generatedAt": timestamp,
+        "selectedCharacterId": "90000001",
+        "characters": [
+            demo_character(90000001, "Demo Capsuleer", 2 * 3600 + 14 * 60, "Advanced Infomorph Psychology", True),
+            demo_character(90000002, "Alt Capsuleer", 2 * 86400 + 5 * 3600, "Gallente Battleship", False),
+        ],
+        "plans": [{"name": "Demo PvE Plan", "skills": [{"skillId": 3355, "targetLevel": 5}]}],
+    }
+
+
+def load_characters() -> dict:
+    data = state()
+    valid = []
+    for character in data["characters"]:
+        if isinstance(character, dict) and str(character.get("character_id", "")).isdigit():
+            valid.append(character)
+    data["characters"] = valid
+    return data
+
+
+def snapshot(force: bool) -> dict:
+    if DEMO_FILE.is_file() and not DEMO_FILE.is_symlink():
+        return demo_snapshot()
+    data = load_characters()
+    characters = []
+    for character in data["characters"]:
+        try:
+            characters.append(character_snapshot(character, force, data["plans"]))
+        except MonitorError as error:
+            identity = character_identity(str(character.get("character_id")), str(character.get("name", "")))
+            identity.update({"online": False, "queue": [], "remainingSeconds": 0, "queueRemainingSeconds": 0, "error": str(error)})
+            characters.append(identity)
+    # Access-token refreshes happen while building the snapshot. Persist the
+    # rotated token before the helper exits so the next refresh is seamless.
+    write_json(STATE_FILE, data)
+    return {
+        "ok": True,
+        "generatedAt": now_epoch(),
+        "selectedCharacterId": str(data.get("selectedCharacterId", "")),
+        "characters": characters,
+        "plans": data["plans"],
+    }
+
+
+def pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).decode().rstrip("=")
+    return verifier, challenge
+
+
+SCOPES = [
+    "esi-skills.read_skills.v1", "esi-skills.read_skillqueue.v1",
+    "esi-wallet.read_character_wallet.v1", "esi-assets.read_assets.v1",
+    "esi-location.read_location.v1", "esi-location.read_online.v1", "esi-location.read_ship_type.v1",
+    "esi-clones.read_clones.v1", "esi-clones.read_implants.v1", "esi-characters.read_standings.v1",
+    "esi-contracts.read_character_contracts.v1", "esi-industry.read_character_jobs.v1",
+    "esi-industry.read_character_mining.v1", "esi-markets.read_character_orders.v1",
+    "esi-planets.manage_planets.v1", "esi-characters.read_blueprints.v1",
+    "esi-characters.read_agents_research.v1", "esi-characters.read_fatigue.v1",
+    "esi-characters.read_loyalty.v1", "esi-characters.read_corporation_roles.v1",
+    "esi-characters.read_titles.v1", "esi-characters.read_medals.v1", "esi-fittings.read_fittings.v1",
+    "esi-killmails.read_killmails.v1", "esi-characters.read_notifications.v1",
+    "esi-mail.read_mail.v1", "esi-calendar.read_calendar_events.v1",
+]
+
+
+def auth_add() -> dict:
+    cid = client_id()
+    if not cid:
+        raise MonitorError("configure a client ID before authorizing")
+    redirect_uri = str(config().get("redirect_uri", DEFAULT_REDIRECT_URI))
+    parsed_redirect = urllib.parse.urlparse(redirect_uri)
+    if parsed_redirect.scheme != "http" or parsed_redirect.hostname not in ("127.0.0.1", "localhost"):
+        raise MonitorError("redirect_uri must be an http loopback URL")
+    verifier, challenge = pkce_pair()
+    state_token = secrets.token_urlsafe(24)
+    query = urllib.parse.urlencode({
+        "response_type": "code", "client_id": cid, "redirect_uri": redirect_uri,
+        "scope": " ".join(SCOPES), "state": state_token,
+        "code_challenge": challenge, "code_challenge_method": "S256",
+    })
+
+    result: dict = {}
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            request = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(request.query)
+            if request.path != urllib.parse.urlparse(redirect_uri).path:
+                self.send_error(404)
+                return
+            result.update({key: values[0] for key, values in params.items() if values})
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"EVE authorization received. You can close this tab.\n")
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    redirect_host = parsed_redirect.hostname or "127.0.0.1"
+    server = HTTPServer((redirect_host, parsed_redirect.port or 80), CallbackHandler)
+    server.timeout = 1
+    try:
+        subprocess.Popen(["xdg-open", f"{SSO_AUTHORIZE}?{query}"])
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not result:
+            server.handle_request()
+    finally:
+        server.server_close()
+    if result.get("state") != state_token:
+        raise MonitorError("authorization state did not match")
+    if result.get("error"):
+        raise MonitorError(result.get("error_description") or result["error"])
+    if not result.get("code"):
+        raise MonitorError("authorization timed out")
+    body = urllib.parse.urlencode({
+        "grant_type": "authorization_code", "code": result["code"],
+        "client_id": cid, "redirect_uri": redirect_uri, "code_verifier": verifier,
+    }).encode()
+    token, _ = json_request(SSO_TOKEN, method="POST", data=body, headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    access = str(token.get("access_token", ""))
+    if not access:
+        raise MonitorError("authorization returned no access token")
+    identity, _ = json_request(SSO_VERIFY, headers={"Authorization": f"Bearer {access}"})
+    character_id = str(identity.get("CharacterID", ""))
+    character_name = str(identity.get("CharacterName", ""))
+    if not character_id.isdigit() or not character_name:
+        raise MonitorError("EVE did not return a character identity")
+    data = load_characters()
+    existing = next((item for item in data["characters"] if str(item.get("character_id")) == character_id), None)
+    record = existing or {"character_id": character_id}
+    record.update({
+        "name": character_name,
+        "access_token": access,
+        "refresh_token": str(token.get("refresh_token", record.get("refresh_token", ""))),
+        "expires_at": now_epoch() + int(token.get("expires_in", 1200) or 1200),
+        "scopes": identity.get("Scopes", []),
+    })
+    if existing is None:
+        data["characters"].append(record)
+    if not data.get("selectedCharacterId"):
+        data["selectedCharacterId"] = character_id
+    write_json(STATE_FILE, data)
+    return {"ok": True, "characterId": int(character_id), "name": character_name}
+
+
+def main() -> None:
+    private_directory(ROOT)
+    private_directory(CACHE_ROOT)
+    command = sys.argv[1] if len(sys.argv) > 1 else "snapshot"
+    try:
+        if command == "snapshot":
+            emit(snapshot("--force" in sys.argv[2:]))
+        if command == "details":
+            character_id = sys.argv[2] if len(sys.argv) > 2 else ""
+            feature = sys.argv[3] if len(sys.argv) > 3 else ""
+            if not character_id.isdigit():
+                raise MonitorError("details requires a numeric character id")
+            if DEMO_FILE.is_file() and not DEMO_FILE.is_symlink():
+                emit(demo_detail(feature))
+            data = load_characters()
+            character = next((item for item in data["characters"] if str(item.get("character_id")) == character_id), None)
+            if character is None:
+                raise MonitorError("character is not connected")
+            emit(detail_snapshot(character, feature, "--force" in sys.argv[4:]))
+        if command == "auth-add":
+            emit(auth_add())
+        if command == "auth-list":
+            data = load_characters()
+            emit({"ok": True, "characters": [character_identity(str(item["character_id"]), item.get("name", "")) for item in data["characters"]]})
+        if command == "auth-remove":
+            character_id = sys.argv[2] if len(sys.argv) > 2 else ""
+            if not character_id.isdigit():
+                raise MonitorError("character id must be numeric")
+            data = load_characters()
+            data["characters"] = [item for item in data["characters"] if str(item.get("character_id")) != character_id]
+            if str(data.get("selectedCharacterId")) == character_id:
+                data["selectedCharacterId"] = str(data["characters"][0]["character_id"]) if data["characters"] else ""
+            write_json(STATE_FILE, data)
+            emit({"ok": True})
+        if command == "select":
+            character_id = sys.argv[2] if len(sys.argv) > 2 else ""
+            data = load_characters()
+            if not any(str(item.get("character_id")) == character_id for item in data["characters"]):
+                raise MonitorError("character is not connected")
+            data["selectedCharacterId"] = character_id
+            write_json(STATE_FILE, data)
+            emit({"ok": True})
+        if command == "demo":
+            action = sys.argv[2] if len(sys.argv) > 2 else ""
+            if action == "on":
+                private_directory(DEMO_FILE.parent)
+                DEMO_FILE.write_text("demo\n", encoding="utf-8")
+                DEMO_FILE.chmod(0o600)
+            elif action == "off":
+                DEMO_FILE.unlink(missing_ok=True)
+            else:
+                raise MonitorError("demo takes on or off")
+            emit({"ok": True, "demo": action == "on"})
+        if command == "plan-list":
+            emit({"ok": True, "plans": load_characters()["plans"]})
+        if command == "plan-add":
+            if len(sys.argv) < 5 or not sys.argv[3].isdigit() or not sys.argv[4].isdigit():
+                raise MonitorError("plan-add requires name, numeric skill id, and level")
+            data = load_characters()
+            name = sys.argv[2].strip()[:80]
+            if not name:
+                raise MonitorError("plan name cannot be empty")
+            level = max(1, min(5, int(sys.argv[4])))
+            plan = next((item for item in data["plans"] if item.get("name") == name), None)
+            if plan is None:
+                plan = {"name": name, "skills": []}
+                data["plans"].append(plan)
+            plan["skills"].append({"skillId": int(sys.argv[3]), "targetLevel": level})
+            write_json(STATE_FILE, data)
+            emit({"ok": True, "plans": data["plans"]})
+        if command == "catalog-update":
+            emit(update_catalog())
+        raise MonitorError(f"unknown command: {command}")
+    except MonitorError as error:
+        emit({"ok": False, "error": str(error)})
+    except (OSError, ValueError, KeyError) as error:
+        emit({"ok": False, "error": str(error)})
+
+
+if __name__ == "__main__":
+    main()
