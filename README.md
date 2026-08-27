@@ -67,6 +67,12 @@ omarchy plugin add https://github.com/nicoolai/omarchy-eve-monitor.git --enable
 omarchy bar move io.github.nicoolai.eve-monitor --section right
 ```
 
+To remove the plugin:
+
+```bash
+omarchy plugin remove io.github.nicoolai.eve-monitor
+```
+
 ## Use
 
 - Left-click the bar widget to open the character dashboard.
