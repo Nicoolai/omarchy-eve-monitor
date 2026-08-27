@@ -241,6 +241,11 @@ Panel {
       anchors.fill: parent
       onCloseRequested: root.close()
       onMoveRequested: function(dx, dy) {
+        var maxY = Math.max(0, contentFlick.contentHeight - contentFlick.height)
+        if (dy !== 0 && root.activeView !== "overview" && maxY > 0) {
+          contentFlick.contentY = Math.max(0, Math.min(maxY, contentFlick.contentY + dy * Style.space(56)))
+          return
+        }
         if (dy === 0 || root.characters.length === 0) return
         var nextIndex = Math.max(0, Math.min(root.characters.length - 1, root.selectedIndex + dy))
         if (nextIndex !== root.selectedIndex) root.selectCharacter(nextIndex)
@@ -250,9 +255,19 @@ Panel {
         else if (text === "r" && root.hostWidget) root.hostWidget.refresh(true)
       }
 
-      Column {
-        id: content
+      Flickable {
+        id: contentFlick
         anchors.fill: parent
+        contentWidth: width
+        contentHeight: content.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+
+        Column {
+          id: content
+          width: contentFlick.width
         spacing: Style.space(10)
 
         PanelHero {
@@ -915,6 +930,7 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
         }
+          }
       }
     }
   }
