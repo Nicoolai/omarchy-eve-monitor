@@ -22,6 +22,9 @@ Panel {
   property string activeView: "overview"
   property var detailPayload: ({ ok: false, data: {}, errors: [] })
   property bool detailLoading: false
+  property string detailCharacterId: ""
+  property string pendingDetailView: ""
+  property var pendingDetailTarget: null
   property string settingsMessage: ""
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -59,7 +62,10 @@ Panel {
 
   onSnapshotChanged: {
     syncSelection()
-    if (activeView !== "overview" && activeView !== "settings") Qt.callLater(function() { root.loadDetails(root.activeView) })
+    if (activeView !== "overview" && activeView !== "settings" && root.character
+        && root.detailCharacterId !== String(root.character.characterId)) {
+      Qt.callLater(function() { root.loadDetails(root.activeView, root.character) })
+    }
   }
 
   function open() {
@@ -111,6 +117,13 @@ Panel {
     }
     if (view === "activity") return data.notifications || []
     return data.implants || []
+  }
+
+  function implantLabel(value) {
+    if (value && typeof value === "object") {
+      return value.name || ("Implant type " + (value.typeId || value.type_id || "Unknown"))
+    }
+    return "Implant type " + String(value || "Unknown")
   }
 
   function compactTotal(value) {
@@ -171,6 +184,12 @@ Panel {
   function loadDetails(view, targetCharacter) {
     var target = targetCharacter || root.character
     if (!target || !root.hostWidget) return
+    if (detailProcess.running) {
+      root.pendingDetailView = view
+      root.pendingDetailTarget = target
+      return
+    }
+    root.detailCharacterId = String(target.characterId)
     root.detailLoading = true
     root.detailPayload = { ok: false, data: {}, errors: [] }
     detailProcess.command = ["python3", root.hostWidget.script, "details", String(target.characterId), view]
@@ -858,7 +877,7 @@ Panel {
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 visible: modelData.kind === "skill"
-                text: modelData.name
+                text: modelData.name || ""
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
@@ -872,7 +891,7 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Style.space(45)
                 visible: modelData.kind === "skill"
-                text: "L" + modelData.level
+                text: "L" + (modelData.level || 0)
                 textFormat: Text.PlainText
                 color: root.accent
                 font.family: root.fontFamily
@@ -884,7 +903,7 @@ Panel {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Style.space(100)
                 visible: modelData.kind === "skill"
-                text: Model.formatNumber(modelData.skillPoints) + " SP"
+                text: Model.formatNumber(modelData.skillPoints || 0) + " SP"
                 textFormat: Text.PlainText
                 horizontalAlignment: Text.AlignRight
                 color: root.dim
@@ -932,7 +951,7 @@ Panel {
                       : "Job " + (modelData.job_id || "") + "  -  " + (modelData.status || "unknown") + "  -  " + (modelData.end_date || ""))
                     : root.activeView === "activity"
                       ? (modelData.type || "Notification") + "  -  " + (modelData.timestamp || "")
-                      : "Implant type " + modelData
+                       : root.implantLabel(modelData)
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
@@ -977,6 +996,13 @@ Panel {
     }
     onExited: function(exitCode, exitStatus) {
       if (exitCode !== 0 && root.detailLoading) root.detailLoading = false
+      if (root.pendingDetailView !== "") {
+        var nextView = root.pendingDetailView
+        var nextTarget = root.pendingDetailTarget
+        root.pendingDetailView = ""
+        root.pendingDetailTarget = null
+        Qt.callLater(function() { root.loadDetails(nextView, nextTarget) })
+      }
     }
   }
 

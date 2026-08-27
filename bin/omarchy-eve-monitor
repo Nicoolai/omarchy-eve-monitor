@@ -486,7 +486,24 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
         collect_feature(client, "killmails", lambda: paged(client, f"{prefix}/killmails/recent", force=force), data, errors)
     elif feature == "character":
         collect_feature(client, "clones", lambda: client.get(f"{prefix}/clones", ttl=120, force=force), data, errors)
-        collect_feature(client, "implants", lambda: client.get(f"{prefix}/implants", ttl=120, force=force), data, errors)
+        try:
+            implants = client.get(f"{prefix}/implants", ttl=120, force=force)
+            implant_ids = [
+                int(item.get("type_id", 0)) if isinstance(item, dict) else int(item)
+                for item in implants
+                if (isinstance(item, dict) and str(item.get("type_id", "")).isdigit()) or (not isinstance(item, dict) and str(item).isdigit())
+            ]
+            try:
+                names = public_names(implant_ids)
+            except MonitorError:
+                names = {}
+            data["implants"] = [{
+                "typeId": implant_id,
+                "name": names.get(str(implant_id), "Implant type " + str(implant_id)),
+            } for implant_id in implant_ids]
+        except MonitorError as error:
+            errors.append(f"implants: {error}")
+            data["implants"] = []
         collect_feature(client, "fatigue", lambda: client.get(f"{prefix}/fatigue", ttl=300, force=force), data, errors)
         collect_feature(client, "standings", lambda: client.get(f"{prefix}/standings", ttl=3600, force=force), data, errors)
         collect_feature(client, "loyalty", lambda: client.get(f"{prefix}/loyalty/points", ttl=3600, force=force), data, errors)
@@ -528,7 +545,7 @@ def demo_detail(feature: str) -> dict:
     elif feature == "activity":
         common["data"] = {"notifications": [{"notification_id": 1, "type": "SkillFinished", "timestamp": "2026-08-27T16:00:00Z", "is_read": False}], "mail": [], "calendar": [], "killmails": []}
     elif feature == "character":
-        common["data"] = {"clones": {"home_location": {"location_id": 60003760}}, "implants": [9941, 9942], "fatigue": {}, "standings": [], "loyalty": [], "roles": [], "titles": [], "medals": [], "fittings": []}
+        common["data"] = {"clones": {"home_location": {"location_id": 60003760}}, "implants": [{"typeId": 9941, "name": "High-grade Snake Alpha"}, {"typeId": 9942, "name": "High-grade Snake Beta"}], "fatigue": {}, "standings": [], "loyalty": [], "roles": [], "titles": [], "medals": [], "fittings": []}
     else:
         raise MonitorError("unknown detail feature")
     return common

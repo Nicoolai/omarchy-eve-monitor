@@ -31,6 +31,14 @@ class SkillClient:
         ]}
 
 
+class CharacterClient:
+    def __init__(self, character):
+        self.character = character
+
+    def get(self, path, **kwargs):
+        return [9941, 9942] if path.endswith("/implants") else {}
+
+
 class BackendTests(unittest.TestCase):
     def test_iso_epoch_accepts_eve_dates(self):
         self.assertEqual(eve_monitor.iso_epoch("2026-01-01T00:00:00Z"), 1767225600)
@@ -68,6 +76,18 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(payload["data"]["skills"][0]["name"], "Test Skill")
         self.assertEqual(payload["data"]["skills"][0]["category"], "Gunnery")
         self.assertEqual(payload["data"]["totalSp"], 123456)
+
+    def test_character_details_resolve_implant_names(self):
+        with patch.object(eve_monitor, "EsiClient", CharacterClient), patch.object(
+            eve_monitor,
+            "public_names",
+            return_value={"9941": "High-grade Snake Alpha", "9942": "High-grade Snake Beta"},
+        ):
+            payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
+        self.assertEqual(payload["data"]["implants"], [
+            {"typeId": 9941, "name": "High-grade Snake Alpha"},
+            {"typeId": 9942, "name": "High-grade Snake Beta"},
+        ])
 
     def test_plan_prerequisites_merge_to_highest_level(self):
         catalog = {"skills": {
