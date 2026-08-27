@@ -25,6 +25,8 @@ Panel {
   property string detailCharacterId: ""
   property string pendingDetailView: ""
   property var pendingDetailTarget: null
+  property real detailScrollY: 0
+  property real pendingDetailScrollY: 0
   property string settingsMessage: ""
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -205,14 +207,17 @@ Panel {
     return rows
   }
 
-  function loadDetails(view, targetCharacter) {
+  function loadDetails(view, targetCharacter, restoreY) {
     var target = targetCharacter || root.character
     if (!target || !root.hostWidget) return
+    var currentScrollY = restoreY === undefined ? contentFlick.contentY : restoreY
     if (detailProcess.running) {
       root.pendingDetailView = view
       root.pendingDetailTarget = target
+      root.pendingDetailScrollY = Math.max(root.pendingDetailScrollY, currentScrollY)
       return
     }
+    root.detailScrollY = Math.max(0, currentScrollY)
     root.detailCharacterId = String(target.characterId)
     root.detailLoading = true
     root.detailPayload = { ok: false, data: {}, errors: [] }
@@ -228,6 +233,15 @@ Panel {
       root.detailPayload = { ok: false, data: {}, errors: ["Unexpected response from EVE monitor"] }
     }
     root.detailLoading = false
+    root.restoreDetailScroll()
+  }
+
+  function restoreDetailScroll() {
+    var scrollY = root.detailScrollY
+    Qt.callLater(function() {
+      var maxY = Math.max(0, contentFlick.contentHeight - contentFlick.height)
+      contentFlick.contentY = Math.max(0, Math.min(scrollY, maxY))
+    })
   }
 
   function settingValue(name, fallback) {
@@ -1103,12 +1117,15 @@ Panel {
     }
     onExited: function(exitCode, exitStatus) {
       if (exitCode !== 0 && root.detailLoading) root.detailLoading = false
+      if (exitCode !== 0) root.restoreDetailScroll()
       if (root.pendingDetailView !== "") {
         var nextView = root.pendingDetailView
         var nextTarget = root.pendingDetailTarget
+        var nextScrollY = root.pendingDetailScrollY
         root.pendingDetailView = ""
         root.pendingDetailTarget = null
-        Qt.callLater(function() { root.loadDetails(nextView, nextTarget) })
+        root.pendingDetailScrollY = 0
+        Qt.callLater(function() { root.loadDetails(nextView, nextTarget, nextScrollY) })
       }
     }
   }
