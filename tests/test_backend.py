@@ -165,6 +165,7 @@ class BackendTests(unittest.TestCase):
     def test_demo_wealth_is_wallet_focused(self):
         payload = eve_monitor.demo_detail("wealth")
         self.assertNotIn("assets", payload["data"])
+        self.assertNotIn("transactions", payload["data"])
         self.assertIn("cashflow", payload["data"])
 
     def test_demo_detail_rejects_unknown_feature(self):

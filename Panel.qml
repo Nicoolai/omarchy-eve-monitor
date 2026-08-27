@@ -138,18 +138,9 @@ Panel {
     return text.length >= 10 ? text.substring(5, 10) : text
   }
 
-  function walletTimestampLabel(value) {
-    var text = String(value || "")
-    return text.length >= 16 ? text.substring(0, 16).replace("T", " ") : text
-  }
-
   function walletAmount(value) {
     var amount = Number(value) || 0
     return (amount >= 0 ? "+" : "-") + Model.formatIsk(Math.abs(amount))
-  }
-
-  function walletTransactionTotal(transaction) {
-    return (Number(transaction.quantity) || 0) * (Number(transaction.unit_price) || 0)
   }
 
   function implantLabel(value) {
@@ -1040,124 +1031,6 @@ Panel {
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-            }
-          }
-
-          Text {
-            width: parent.width
-            visible: root.activeView === "wealth" && !root.detailLoading
-            text: "WALLET JOURNAL"
-            textFormat: Text.PlainText
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          ListView {
-            id: walletJournalList
-            width: parent.width
-            height: Math.min(contentHeight, Style.space(240))
-            visible: root.activeView === "wealth" && !root.detailLoading && root.detailPayload.data && root.detailPayload.data.journal && root.detailPayload.data.journal.length > 0
-            model: root.detailPayload.data && root.detailPayload.data.journal ? root.detailPayload.data.journal : []
-            clip: true
-            spacing: Style.space(2)
-            delegate: Item {
-              required property var modelData
-              width: walletJournalList.width
-              height: Style.space(42)
-              Text {
-                anchors.left: parent.left
-                anchors.right: journalAmount.left
-                anchors.top: parent.top
-                text: modelData.description || modelData.ref_type || "Wallet entry"
-                textFormat: Text.PlainText
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                elide: Text.ElideRight
-              }
-              Text {
-                anchors.left: parent.left
-                anchors.right: journalAmount.left
-                anchors.bottom: parent.bottom
-                text: root.walletTimestampLabel(modelData.date) + "  |  " + (modelData.ref_type || "")
-                textFormat: Text.PlainText
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-              Text {
-                id: journalAmount
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(150)
-                text: root.walletAmount(modelData.amount)
-                textFormat: Text.PlainText
-                horizontalAlignment: Text.AlignRight
-                color: Number(modelData.amount) >= 0 ? root.accent : Color.urgent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-            }
-          }
-
-          Text {
-            width: parent.width
-            visible: root.activeView === "wealth" && !root.detailLoading
-            text: "TRANSACTIONS"
-            textFormat: Text.PlainText
-            color: root.accent
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-          }
-
-          ListView {
-            id: walletTransactionList
-            width: parent.width
-            height: Math.min(contentHeight, Style.space(200))
-            visible: root.activeView === "wealth" && !root.detailLoading && root.detailPayload.data && root.detailPayload.data.transactions && root.detailPayload.data.transactions.length > 0
-            model: root.detailPayload.data && root.detailPayload.data.transactions ? root.detailPayload.data.transactions : []
-            clip: true
-            spacing: Style.space(2)
-            delegate: Item {
-              required property var modelData
-              width: walletTransactionList.width
-              height: Style.space(42)
-              Text {
-                anchors.left: parent.left
-                anchors.right: transactionTotal.left
-                anchors.top: parent.top
-                text: (modelData.is_buy ? "BUY  " : "SELL  ") + (modelData.typeName || ("Type " + (modelData.type_id || "Unknown")))
-                textFormat: Text.PlainText
-                color: modelData.is_buy ? Color.urgent : root.accent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                elide: Text.ElideRight
-              }
-              Text {
-                anchors.left: parent.left
-                anchors.right: transactionTotal.left
-                anchors.bottom: parent.bottom
-                text: Model.formatNumber(modelData.quantity || 0) + " units  |  " + root.walletTimestampLabel(modelData.date)
-                textFormat: Text.PlainText
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-              Text {
-                id: transactionTotal
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                width: Style.space(150)
-                text: Model.formatIsk(root.walletTransactionTotal(modelData))
-                textFormat: Text.PlainText
-                horizontalAlignment: Text.AlignRight
-                color: modelData.is_buy ? Color.urgent : root.accent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
             }
           }
 

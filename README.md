@@ -133,9 +133,8 @@ python3 bin/omarchy-eve-monitor details CHARACTER_ID skills
 python3 bin/omarchy-eve-monitor details CHARACTER_ID wallet
 ```
 
-The Wealth tab focuses on wallet balance, 30-day journal cash flow, and recent
-wallet transactions. Asset browsing is currently available only through the
-backend's direct `assets` detail command.
+The Wealth tab focuses on wallet balance and 30-day journal cash flow. Asset
+browsing and transaction details are currently not shown in the panel.
 
 Some ESI data is inherently limited: wallet journal data is limited to 30 days,
 many histories are limited to 90 days, and skills may remain stale until the
