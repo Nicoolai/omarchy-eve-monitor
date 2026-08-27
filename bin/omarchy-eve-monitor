@@ -538,6 +538,35 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
         collect_feature(client, "titles", lambda: client.get(f"{prefix}/titles", ttl=3600, force=force), data, errors)
         collect_feature(client, "medals", lambda: client.get(f"{prefix}/medals", ttl=3600, force=force), data, errors)
         collect_feature(client, "fittings", lambda: client.get(f"{prefix}/fittings", ttl=300, force=force), data, errors)
+        entity_ids = []
+        clones = data.get("clones", {})
+        if isinstance(clones, dict):
+            home = clones.get("home_location", {})
+            if isinstance(home, dict): entity_ids.append(home.get("location_id"))
+            for clone in clones.get("jump_clones", []):
+                if isinstance(clone, dict): entity_ids.append(clone.get("location_id"))
+        for standing in data.get("standings", []):
+            if isinstance(standing, dict): entity_ids.append(standing.get("from_id"))
+        for points in data.get("loyalty", []):
+            if isinstance(points, dict): entity_ids.append(points.get("corporation_id"))
+        try:
+            entity_names = public_names(entity_ids)
+        except MonitorError:
+            entity_names = {}
+        if isinstance(clones, dict):
+            home = clones.get("home_location")
+            if isinstance(home, dict):
+                home = dict(home)
+                home["locationName"] = entity_names.get(str(home.get("location_id")), "")
+            jump_clones = []
+            for clone in clones.get("jump_clones", []):
+                if not isinstance(clone, dict): continue
+                enriched = dict(clone)
+                enriched["locationName"] = entity_names.get(str(clone.get("location_id")), "")
+                jump_clones.append(enriched)
+            data["clones"] = {**clones, "home_location": home or {}, "jump_clones": jump_clones}
+        data["standings"] = [{**item, "fromName": entity_names.get(str(item.get("from_id")), "")} for item in data.get("standings", []) if isinstance(item, dict)]
+        data["loyalty"] = [{**item, "corporationName": entity_names.get(str(item.get("corporation_id")), "")} for item in data.get("loyalty", []) if isinstance(item, dict)]
     else:
         raise MonitorError("unknown detail feature")
     return {"ok": True, "characterId": int(character_id), "feature": feature, "data": data, "errors": errors}
@@ -584,13 +613,13 @@ def demo_detail(feature: str) -> dict:
     elif feature == "character":
         common["data"] = {
             "clones": {
-                "home_location": {"location_id": 60003760},
-                "jump_clones": [{"jump_clone_id": 1, "name": "Demo clone", "location_id": 60008494}],
+                "home_location": {"location_id": 60003760, "locationName": "Jita IV - Moon 4"},
+                "jump_clones": [{"jump_clone_id": 1, "name": "Demo clone", "location_id": 60008494, "locationName": "Amarr VIII"}],
             },
             "implants": [{"typeId": 9941, "name": "High-grade Snake Alpha"}, {"typeId": 9942, "name": "High-grade Snake Beta"}],
             "fatigue": {"jump_fatigue_expire_date": "2026-08-27T18:30:00Z", "last_jump_date": "2026-08-27T17:30:00Z"},
-            "standings": [{"from_id": 10000002, "from_type": "corporation", "standing": 8.5}],
-            "loyalty": [{"corporation_id": 10000002, "loyalty_points": 125000}],
+            "standings": [{"from_id": 10000002, "from_type": "corporation", "fromName": "Caldari State", "standing": 8.5}],
+            "loyalty": [{"corporation_id": 10000002, "corporationName": "Caldari Navy", "loyalty_points": 125000}],
             "roles": [],
             "titles": [],
             "medals": [],

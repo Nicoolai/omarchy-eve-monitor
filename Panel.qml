@@ -179,11 +179,11 @@ Panel {
     var clones = data.clones || {}
     var home = clones.home_location || {}
     var jumpClones = clones.jump_clones || []
-    if (home.location_id !== undefined) value("Home", home.location_name || ("Location " + home.location_id))
+    if (home.location_id !== undefined) value("Home", home.locationName || ("Location " + home.location_id))
     for (var j = 0; j < jumpClones.length; j++) {
       var clone = jumpClones[j] || {}
       var cloneName = clone.name || ("Jump clone " + (clone.jump_clone_id || (j + 1)))
-      var cloneLocation = clone.location_name || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
+      var cloneLocation = clone.locationName || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
       value(cloneName, cloneLocation)
     }
     if (home.location_id === undefined && jumpClones.length === 0) empty("No clones reported")
@@ -213,7 +213,7 @@ Panel {
     if (standings.length === 0) empty("No standings reported")
     for (var k = 0; k < standings.length; k++) {
       var standing = standings[k] || {}
-      var standingName = (standing.from_type || "Entity") + " " + (standing.from_id || "unknown")
+      var standingName = standing.fromName || ((standing.from_type || "Entity") + " " + (standing.from_id || "unknown"))
       value(standingName, Number(standing.standing || 0).toFixed(2))
     }
 
@@ -222,7 +222,7 @@ Panel {
     if (loyalty.length === 0) empty("No loyalty points reported")
     for (var m = 0; m < loyalty.length; m++) {
       var points = loyalty[m] || {}
-      value("Corporation " + (points.corporation_id || "unknown"), Model.formatNumber(points.loyalty_points || 0) + " points")
+      value(points.corporationName || ("Corporation " + (points.corporation_id || "unknown")), Model.formatNumber(points.loyalty_points || 0) + " points")
     }
     return rows
   }

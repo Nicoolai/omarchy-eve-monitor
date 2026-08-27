@@ -39,6 +39,17 @@ class CharacterClient:
         return [9941, 9942] if path.endswith("/implants") else {}
 
 
+class NamedCharacterClient(CharacterClient):
+    def get(self, path, **kwargs):
+        if path.endswith("/clones"):
+            return {"home_location": {"location_id": 60003760}, "jump_clones": [{"jump_clone_id": 1, "location_id": 60008494}]}
+        if path.endswith("/standings"):
+            return [{"from_id": 2001, "from_type": "corporation", "standing": 5.0}]
+        if path.endswith("/loyalty/points"):
+            return [{"corporation_id": 2002, "loyalty_points": 1234}]
+        return super().get(path, **kwargs)
+
+
 class BackendTests(unittest.TestCase):
     def test_iso_epoch_accepts_eve_dates(self):
         self.assertEqual(eve_monitor.iso_epoch("2026-01-01T00:00:00Z"), 1767225600)
@@ -93,6 +104,15 @@ class BackendTests(unittest.TestCase):
         with patch.object(eve_monitor, "EsiClient", CharacterClient):
             payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
         self.assertEqual(set(payload["data"]), {"clones", "implants", "fatigue", "standings", "loyalty", "roles", "titles", "medals", "fittings"})
+
+    def test_character_details_resolve_entity_names(self):
+        names = {"60003760": "Home", "60008494": "Jump Clone", "2001": "Test Corporation", "2002": "Test Loyalty Corporation"}
+        with patch.object(eve_monitor, "EsiClient", NamedCharacterClient), patch.object(eve_monitor, "public_names", return_value=names):
+            payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
+        self.assertEqual(payload["data"]["clones"]["home_location"]["locationName"], "Home")
+        self.assertEqual(payload["data"]["clones"]["jump_clones"][0]["locationName"], "Jump Clone")
+        self.assertEqual(payload["data"]["standings"][0]["fromName"], "Test Corporation")
+        self.assertEqual(payload["data"]["loyalty"][0]["corporationName"], "Test Loyalty Corporation")
 
     def test_demo_character_details_include_requested_sections(self):
         payload = eve_monitor.demo_detail("character")
