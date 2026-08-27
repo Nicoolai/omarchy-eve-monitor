@@ -76,7 +76,7 @@ BarWidget {
     authCanceled = false
     authRunning = true
     if (panelLoader.item) panelLoader.item.authMessage = "Waiting for EVE authorization..."
-    authTimeout.restart()
+    if (authTimeout) authTimeout.restart()
     authProcess.running = true
   }
 
@@ -88,7 +88,7 @@ BarWidget {
     authCanceled = true
     authProcess.running = false
     authRunning = false
-    authTimeout.stop()
+    if (authTimeout) authTimeout.stop()
     if (panelLoader.item) panelLoader.item.authMessage = "Authorization canceled"
   }
 
@@ -167,7 +167,7 @@ BarWidget {
     }
     onExited: function(exitCode, exitStatus) {
       root.authRunning = false
-      root.authTimeout.stop()
+      if (authTimeout) authTimeout.stop()
       root.refresh(true)
       if (panelLoader.item && !root.authCanceled) {
         panelLoader.item.authMessage = exitCode === 0 ? "Character added" : (root.authResultMessage || "Authorization failed")
