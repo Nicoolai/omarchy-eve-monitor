@@ -114,6 +114,17 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(payload["data"]["standings"][0]["fromName"], "Test Corporation")
         self.assertEqual(payload["data"]["loyalty"][0]["corporationName"], "Test Loyalty Corporation")
 
+    def test_entity_name_lookup_keeps_standings_when_location_lookup_fails(self):
+        def names(ids):
+            if 60003760 in ids or 60008494 in ids:
+                raise eve_monitor.MonitorError("private structure")
+            return {"2001": "Test Corporation", "2002": "Test Loyalty Corporation"}
+
+        with patch.object(eve_monitor, "EsiClient", NamedCharacterClient), patch.object(eve_monitor, "public_names", side_effect=names):
+            payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
+        self.assertEqual(payload["data"]["standings"][0]["fromName"], "Test Corporation")
+        self.assertEqual(payload["data"]["loyalty"][0]["corporationName"], "Test Loyalty Corporation")
+
     def test_demo_character_details_include_requested_sections(self):
         payload = eve_monitor.demo_detail("character")
         self.assertEqual(payload["data"]["fatigue"]["jump_fatigue_expire_date"], "2026-08-27T18:30:00Z")

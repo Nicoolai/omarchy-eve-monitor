@@ -538,17 +538,22 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
         collect_feature(client, "titles", lambda: client.get(f"{prefix}/titles", ttl=3600, force=force), data, errors)
         collect_feature(client, "medals", lambda: client.get(f"{prefix}/medals", ttl=3600, force=force), data, errors)
         collect_feature(client, "fittings", lambda: client.get(f"{prefix}/fittings", ttl=300, force=force), data, errors)
+        location_ids = []
         entity_ids = []
         clones = data.get("clones", {})
         if isinstance(clones, dict):
             home = clones.get("home_location", {})
-            if isinstance(home, dict): entity_ids.append(home.get("location_id"))
+            if isinstance(home, dict): location_ids.append(home.get("location_id"))
             for clone in clones.get("jump_clones", []):
-                if isinstance(clone, dict): entity_ids.append(clone.get("location_id"))
+                if isinstance(clone, dict): location_ids.append(clone.get("location_id"))
         for standing in data.get("standings", []):
             if isinstance(standing, dict): entity_ids.append(standing.get("from_id"))
         for points in data.get("loyalty", []):
             if isinstance(points, dict): entity_ids.append(points.get("corporation_id"))
+        try:
+            location_names = public_names(location_ids)
+        except MonitorError:
+            location_names = {}
         try:
             entity_names = public_names(entity_ids)
         except MonitorError:
@@ -557,12 +562,12 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
             home = clones.get("home_location")
             if isinstance(home, dict):
                 home = dict(home)
-                home["locationName"] = entity_names.get(str(home.get("location_id")), "")
+                home["locationName"] = location_names.get(str(home.get("location_id")), "")
             jump_clones = []
             for clone in clones.get("jump_clones", []):
                 if not isinstance(clone, dict): continue
                 enriched = dict(clone)
-                enriched["locationName"] = entity_names.get(str(clone.get("location_id")), "")
+                enriched["locationName"] = location_names.get(str(clone.get("location_id")), "")
                 jump_clones.append(enriched)
             data["clones"] = {**clones, "home_location": home or {}, "jump_clones": jump_clones}
         data["standings"] = [{**item, "fromName": entity_names.get(str(item.get("from_id")), "")} for item in data.get("standings", []) if isinstance(item, dict)]
