@@ -396,6 +396,30 @@ def public_names(ids: list[int]) -> dict[str, str]:
     return {str(item["id"]): str(item["name"]) for item in payload if isinstance(item, dict) and "id" in item}
 
 
+def resolve_location_names(client: EsiClient, ids: list, force: bool) -> dict[str, str]:
+    unique = sorted({int(value) for value in ids if str(value).isdigit()})
+    if not unique:
+        return {}
+    try:
+        names = public_names(unique)
+    except MonitorError:
+        names = {}
+    for location_id in unique:
+        key = str(location_id)
+        if key in names:
+            continue
+        try:
+            names.update(public_names([location_id]))
+        except MonitorError:
+            try:
+                structure = client.get(f"universe/structures/{location_id}", ttl=604800, force=force)
+                if isinstance(structure, dict) and structure.get("name"):
+                    names[key] = str(structure["name"])
+            except MonitorError:
+                pass
+    return names
+
+
 def paged(client: EsiClient, path: str, *, force: bool = False, max_pages: int = 20) -> list:
     records = []
     for page in range(1, max_pages + 1):
@@ -550,10 +574,7 @@ def detail_snapshot(character: dict, feature: str, force: bool) -> dict:
             if isinstance(standing, dict): entity_ids.append(standing.get("from_id"))
         for points in data.get("loyalty", []):
             if isinstance(points, dict): entity_ids.append(points.get("corporation_id"))
-        try:
-            location_names = public_names(location_ids)
-        except MonitorError:
-            location_names = {}
+        location_names = resolve_location_names(client, location_ids, force)
         try:
             entity_names = public_names(entity_ids)
         except MonitorError:
@@ -856,6 +877,7 @@ SCOPES = [
     "esi-wallet.read_character_wallet.v1", "esi-assets.read_assets.v1",
     "esi-location.read_location.v1", "esi-location.read_online.v1", "esi-location.read_ship_type.v1",
     "esi-clones.read_clones.v1", "esi-clones.read_implants.v1", "esi-characters.read_standings.v1",
+    "esi-universe.read_structures.v1",
     "esi-contracts.read_character_contracts.v1", "esi-industry.read_character_jobs.v1",
     "esi-industry.read_character_mining.v1", "esi-markets.read_character_orders.v1",
     "esi-planets.manage_planets.v1", "esi-characters.read_blueprints.v1",

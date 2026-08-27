@@ -50,6 +50,11 @@ class NamedCharacterClient(CharacterClient):
         return super().get(path, **kwargs)
 
 
+class StructureClient:
+    def get(self, path, **kwargs):
+        return {"name": "Private Citadel"}
+
+
 class BackendTests(unittest.TestCase):
     def test_iso_epoch_accepts_eve_dates(self):
         self.assertEqual(eve_monitor.iso_epoch("2026-01-01T00:00:00Z"), 1767225600)
@@ -124,6 +129,16 @@ class BackendTests(unittest.TestCase):
             payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
         self.assertEqual(payload["data"]["standings"][0]["fromName"], "Test Corporation")
         self.assertEqual(payload["data"]["loyalty"][0]["corporationName"], "Test Loyalty Corporation")
+
+    def test_location_name_lookup_falls_back_to_structure_endpoint(self):
+        def names(ids):
+            if 60008494 in ids:
+                raise eve_monitor.MonitorError("private structure")
+            return {"60003760": "Home"}
+
+        with patch.object(eve_monitor, "public_names", side_effect=names):
+            result = eve_monitor.resolve_location_names(StructureClient(), [60003760, 60008494], False)
+        self.assertEqual(result, {"60003760": "Home", "60008494": "Private Citadel"})
 
     def test_demo_character_details_include_requested_sections(self):
         payload = eve_monitor.demo_detail("character")
