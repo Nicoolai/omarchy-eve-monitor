@@ -100,7 +100,7 @@ Panel {
   }
 
   function viewLabel(view) {
-    var labels = { overview: "OVERVIEW", training: "TRAINING", wealth: "WEALTH", industry_market: "INDUSTRY", activity: "ACTIVITY", character: "CHARACTER", settings: "SETTINGS" }
+    var labels = { overview: "OVERVIEW", training: "TRAINING", wealth: "WEALTH", industry_market: "INDUSTRY", activity: "ACTIVITY", character: "IMPLANTS", settings: "SETTINGS" }
     return labels[view] || String(view).toUpperCase()
   }
 
@@ -150,6 +150,63 @@ Panel {
       return value.name || ("Implant type " + (value.typeId || value.type_id || "Unknown"))
     }
     return "Implant type " + String(value || "Unknown")
+  }
+
+  function characterRows() {
+    var data = root.detailPayload.data || {}
+    var rows = []
+    function section(label) { rows.push({ kind: "section", label: label }) }
+    function empty(label) { rows.push({ kind: "empty", label: label }) }
+    function value(label, text) { rows.push({ kind: "value", label: label, value: String(text) }) }
+
+    section("IMPLANTS")
+    var implants = data.implants || []
+    if (implants.length === 0) empty("No implants reported")
+    for (var i = 0; i < implants.length; i++) value(implantLabel(implants[i]), "")
+
+    section("CLONES")
+    var clones = data.clones || {}
+    var home = clones.home_location || {}
+    var jumpClones = clones.jump_clones || []
+    if (home.location_id !== undefined) value("Home", home.location_name || ("Location " + home.location_id))
+    for (var j = 0; j < jumpClones.length; j++) {
+      var clone = jumpClones[j] || {}
+      var cloneName = clone.name || ("Jump clone " + (clone.jump_clone_id || (j + 1)))
+      var cloneLocation = clone.location_name || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
+      value(cloneName, cloneLocation)
+    }
+    if (home.location_id === undefined && jumpClones.length === 0) empty("No clones reported")
+
+    section("FATIGUE")
+    var fatigue = data.fatigue || {}
+    var fatigueCount = 0
+    if (fatigue.jump_fatigue_expire_date) {
+      value("Jump fatigue expires", fatigue.jump_fatigue_expire_date)
+      fatigueCount++
+    }
+    if (fatigue.last_jump_date) {
+      value("Last jump", fatigue.last_jump_date)
+      fatigueCount++
+    }
+    if (fatigueCount === 0) empty("No fatigue reported")
+
+    section("STANDINGS")
+    var standings = data.standings || []
+    if (standings.length === 0) empty("No standings reported")
+    for (var k = 0; k < standings.length; k++) {
+      var standing = standings[k] || {}
+      var standingName = (standing.from_type || "Entity") + " " + (standing.from_id || "unknown")
+      value(standingName, Number(standing.standing || 0).toFixed(2))
+    }
+
+    section("LOYALTY")
+    var loyalty = data.loyalty || []
+    if (loyalty.length === 0) empty("No loyalty points reported")
+    for (var m = 0; m < loyalty.length; m++) {
+      var points = loyalty[m] || {}
+      value("Corporation " + (points.corporation_id || "unknown"), Model.formatNumber(points.loyalty_points || 0) + " points")
+    }
+    return rows
   }
 
   function compactTotal(value) {
@@ -1049,9 +1106,64 @@ Panel {
           }
 
           ListView {
+            id: characterDetailList
+            width: parent.width
+            height: Math.min(contentHeight, Style.space(500))
+            visible: root.activeView === "character" && !root.detailLoading
+            model: root.characterRows()
+            clip: true
+            spacing: Style.space(2)
+            delegate: Rectangle {
+              required property var modelData
+              width: characterDetailList.width
+              height: modelData.kind === "section" ? Style.space(26) : Style.space(34)
+              color: "transparent"
+
+              Text {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: modelData.kind === "section"
+                text: modelData.label
+                textFormat: Text.PlainText
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+              Text {
+                anchors.left: parent.left
+                anchors.right: characterValue.left
+                anchors.rightMargin: Style.space(8)
+                anchors.verticalCenter: parent.verticalCenter
+                visible: modelData.kind !== "section"
+                text: modelData.label
+                textFormat: Text.PlainText
+                color: modelData.kind === "empty" ? root.dim : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                elide: Text.ElideRight
+              }
+              Text {
+                id: characterValue
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: modelData.kind === "value" && modelData.value !== ""
+                text: modelData.value || ""
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignRight
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideLeft
+              }
+            }
+          }
+
+          ListView {
             width: parent.width
             height: Math.min(contentHeight, Style.space(400))
-            visible: ["industry_market", "activity", "character"].indexOf(root.activeView) >= 0 && !root.detailLoading
+            visible: ["industry_market", "activity"].indexOf(root.activeView) >= 0 && !root.detailLoading
             model: root.detailRows(root.activeView)
             clip: true
             spacing: Style.space(2)

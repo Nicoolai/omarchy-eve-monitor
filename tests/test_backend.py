@@ -89,6 +89,18 @@ class BackendTests(unittest.TestCase):
             {"typeId": 9942, "name": "High-grade Snake Beta"},
         ])
 
+    def test_character_details_include_requested_sections(self):
+        with patch.object(eve_monitor, "EsiClient", CharacterClient):
+            payload = eve_monitor.detail_snapshot({"character_id": 123}, "character", False)
+        self.assertEqual(set(payload["data"]), {"clones", "implants", "fatigue", "standings", "loyalty", "roles", "titles", "medals", "fittings"})
+
+    def test_demo_character_details_include_requested_sections(self):
+        payload = eve_monitor.demo_detail("character")
+        self.assertEqual(payload["data"]["fatigue"]["jump_fatigue_expire_date"], "2026-08-27T18:30:00Z")
+        self.assertEqual(payload["data"]["loyalty"][0]["loyalty_points"], 125000)
+        self.assertEqual(payload["data"]["standings"][0]["standing"], 8.5)
+        self.assertEqual(payload["data"]["clones"]["jump_clones"][0]["name"], "Demo clone")
+
     def test_wallet_cashflow_summarizes_signed_journal_entries(self):
         summary = eve_monitor.wallet_cashflow([
             {"date": "2026-08-27T12:00:00Z", "amount": 12500000},

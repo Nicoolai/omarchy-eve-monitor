@@ -582,7 +582,20 @@ def demo_detail(feature: str) -> dict:
     elif feature == "activity":
         common["data"] = {"notifications": [{"notification_id": 1, "type": "SkillFinished", "timestamp": "2026-08-27T16:00:00Z", "is_read": False}], "mail": [], "calendar": [], "killmails": []}
     elif feature == "character":
-        common["data"] = {"clones": {"home_location": {"location_id": 60003760}}, "implants": [{"typeId": 9941, "name": "High-grade Snake Alpha"}, {"typeId": 9942, "name": "High-grade Snake Beta"}], "fatigue": {}, "standings": [], "loyalty": [], "roles": [], "titles": [], "medals": [], "fittings": []}
+        common["data"] = {
+            "clones": {
+                "home_location": {"location_id": 60003760},
+                "jump_clones": [{"jump_clone_id": 1, "name": "Demo clone", "location_id": 60008494}],
+            },
+            "implants": [{"typeId": 9941, "name": "High-grade Snake Alpha"}, {"typeId": 9942, "name": "High-grade Snake Beta"}],
+            "fatigue": {"jump_fatigue_expire_date": "2026-08-27T18:30:00Z", "last_jump_date": "2026-08-27T17:30:00Z"},
+            "standings": [{"from_id": 10000002, "from_type": "corporation", "standing": 8.5}],
+            "loyalty": [{"corporation_id": 10000002, "loyalty_points": 125000}],
+            "roles": [],
+            "titles": [],
+            "medals": [],
+            "fittings": [],
+        }
     else:
         raise MonitorError("unknown detail feature")
     return common
