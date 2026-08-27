@@ -100,7 +100,7 @@ Panel {
   }
 
   function viewLabel(view) {
-    var labels = { overview: "OVERVIEW", training: "TRAINING", wealth: "WEALTH", industry_market: "INDUSTRY", activity: "ACTIVITY", character: "IMPLANTS", settings: "SETTINGS" }
+    var labels = { overview: "OVERVIEW", training: "TRAINING", wealth: "WEALTH", industry_market: "INDUSTRY", activity: "ACTIVITY", character: "CHARACTER", settings: "SETTINGS" }
     return labels[view] || String(view).toUpperCase()
   }
 
