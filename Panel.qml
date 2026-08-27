@@ -209,7 +209,8 @@ Panel {
     if (fatigueExpired || fatigueCount === 0) empty("No fatigue reported")
 
     section("STANDINGS")
-    var standings = data.standings || []
+    var standings = Array.isArray(data.standings) ? data.standings.slice() : []
+    standings.sort(function(a, b) { return (Number(b.standing) || 0) - (Number(a.standing) || 0) })
     if (standings.length === 0) empty("No standings reported")
     for (var k = 0; k < standings.length; k++) {
       var standing = standings[k] || {}
@@ -218,7 +219,8 @@ Panel {
     }
 
     section("LOYALTY")
-    var loyalty = data.loyalty || []
+    var loyalty = Array.isArray(data.loyalty) ? data.loyalty.slice() : []
+    loyalty.sort(function(a, b) { return (Number(b.loyalty_points) || 0) - (Number(a.loyalty_points) || 0) })
     if (loyalty.length === 0) empty("No loyalty points reported")
     for (var m = 0; m < loyalty.length; m++) {
       var points = loyalty[m] || {}
