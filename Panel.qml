@@ -191,15 +191,22 @@ Panel {
     section("FATIGUE")
     var fatigue = data.fatigue || {}
     var fatigueCount = 0
+    var fatigueExpired = false
     if (fatigue.jump_fatigue_expire_date) {
-      value("Jump fatigue expires", localTimestamp(fatigue.jump_fatigue_expire_date))
-      fatigueCount++
+      var fatigueExpiry = new Date(fatigue.jump_fatigue_expire_date)
+      fatigueExpired = !isNaN(fatigueExpiry.getTime()) && fatigueExpiry.getTime() <= Date.now()
     }
-    if (fatigue.last_jump_date) {
-      value("Last jump", localTimestamp(fatigue.last_jump_date))
-      fatigueCount++
+    if (!fatigueExpired) {
+      if (fatigue.jump_fatigue_expire_date) {
+        value("Jump fatigue expires", localTimestamp(fatigue.jump_fatigue_expire_date))
+        fatigueCount++
+      }
+      if (fatigue.last_jump_date) {
+        value("Last jump", localTimestamp(fatigue.last_jump_date))
+        fatigueCount++
+      }
     }
-    if (fatigueCount === 0) empty("No fatigue reported")
+    if (fatigueExpired || fatigueCount === 0) empty("No fatigue reported")
 
     section("STANDINGS")
     var standings = data.standings || []
