@@ -182,9 +182,9 @@ Panel {
     if (home.location_id !== undefined) value("Home", home.locationName || ("Location " + home.location_id))
     for (var j = 0; j < jumpClones.length; j++) {
       var clone = jumpClones[j] || {}
-      var cloneName = clone.name || ("Jump clone " + (clone.jump_clone_id || (j + 1)))
       var cloneLocation = clone.locationName || (clone.location_id !== undefined ? "Location " + clone.location_id : "Location unknown")
-      value(cloneName, cloneLocation)
+      var cloneName = clone.name || (clone.locationName ? "Clone at " + clone.locationName : "Jump clone " + (clone.jump_clone_id || (j + 1)))
+      value(cloneName, clone.name ? cloneLocation : "")
     }
     if (home.location_id === undefined && jumpClones.length === 0) empty("No clones reported")
 
