@@ -15,6 +15,8 @@ BarWidget {
   property bool authRunning: false
   property string authResultMessage: ""
   property bool authCanceled: false
+  property bool refreshQueued: false
+  property bool refreshQueuedForce: false
 
   readonly property string script: String(Qt.resolvedUrl("bin/omarchy-eve-monitor")).replace(/^file:\/\//, "")
   readonly property int refreshIntervalSec: Math.max(60, Math.min(1800, parseInt(setting("refreshIntervalSec", 120), 10) || 120))
@@ -44,7 +46,11 @@ BarWidget {
   }
 
   function refresh(force) {
-    if (snapshotProcess.running) return
+    if (snapshotProcess.running) {
+      refreshQueued = true
+      refreshQueuedForce = refreshQueuedForce || force === true
+      return
+    }
     snapshotProcess.command = ["python3", root.script, "snapshot"].concat(force ? ["--force"] : [])
     snapshotProcess.running = true
   }
@@ -95,7 +101,24 @@ BarWidget {
   function applyAuthOutput(text) {
     try {
       var parsed = JSON.parse(String(text || ""))
-      if (!parsed.ok) authResultMessage = parsed.error || "Authorization failed"
+      if (!parsed.ok) {
+        authResultMessage = parsed.error || "Authorization failed"
+        return
+      }
+      var next = {}
+      for (var key in root.snapshot) next[key] = root.snapshot[key]
+      var characters = (root.snapshot.characters || []).slice()
+      var alreadyListed = characters.some(function(character) { return String(character.characterId) === String(parsed.characterId) })
+      if (!alreadyListed && parsed.characterId) {
+        characters.push(Model.normalizeCharacter({
+          characterId: String(parsed.characterId),
+          name: parsed.name || "New character",
+          queue: [],
+        }))
+        next.characters = characters
+        if (!next.selectedCharacterId) next.selectedCharacterId = String(parsed.characterId)
+        root.snapshot = next
+      }
     } catch (error) {
       authResultMessage = "Authorization failed"
     }
@@ -156,6 +179,13 @@ BarWidget {
       waitForEnd: true
       onStreamFinished: root.applySnapshot(text)
     }
+    onExited: {
+      if (!root.refreshQueued) return
+      var queuedForce = root.refreshQueuedForce
+      root.refreshQueued = false
+      root.refreshQueuedForce = false
+      root.refresh(queuedForce)
+    }
   }
 
   Process {
@@ -168,10 +198,10 @@ BarWidget {
     onExited: function(exitCode, exitStatus) {
       root.authRunning = false
       if (authTimeout) authTimeout.stop()
-      root.refresh(true)
       if (panelLoader.item && !root.authCanceled) {
         panelLoader.item.authMessage = exitCode === 0 ? "Character added" : (root.authResultMessage || "Authorization failed")
       }
+      if (exitCode === 0) root.refresh(false)
       root.authCanceled = false
       root.authResultMessage = ""
     }
