@@ -113,6 +113,29 @@ Panel {
     return data.implants || []
   }
 
+  function compactTotal(value) {
+    var numeric = Number(value) || 0
+    var absolute = Math.abs(numeric)
+    if (absolute >= 1000000000000) return (numeric / 1000000000000).toFixed(1) + "T"
+    if (absolute >= 1000000000) return (numeric / 1000000000).toFixed(1) + "B"
+    if (absolute >= 1000000) return (numeric / 1000000).toFixed(1) + "M"
+    if (absolute >= 1000) return (numeric / 1000).toFixed(1) + "K"
+    return Model.formatNumber(numeric)
+  }
+
+  function headerMeta() {
+    if (root.characters.length === 0) return "No characters connected"
+    var totalSkillPoints = 0
+    var totalIsk = 0
+    for (var i = 0; i < root.characters.length; i++) {
+      totalSkillPoints += Number(root.characters[i].totalSp) || 0
+      totalIsk += Number(root.characters[i].wallet) || 0
+    }
+    return root.characters.length + " character" + (root.characters.length === 1 ? "" : "s")
+      + "  |  " + compactTotal(totalSkillPoints) + " SP"
+      + "  |  " + compactTotal(totalIsk) + " ISK"
+  }
+
   function trainingRows() {
     var skills = root.detailPayload.data && root.detailPayload.data.skills
       ? root.detailPayload.data.skills.slice()
@@ -273,7 +296,7 @@ Panel {
         PanelHero {
           width: parent.width
           title: "EVE Online Monitor"
-          meta: root.characters.length === 0 ? "No characters connected" : root.characters.length + " character" + (root.characters.length === 1 ? "" : "s")
+          meta: root.headerMeta()
           foreground: root.foreground
           fontFamily: root.fontFamily
           iconComponent: Component {
