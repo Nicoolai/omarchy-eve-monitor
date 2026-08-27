@@ -1,17 +1,26 @@
 # EVE Online Monitor for Omarchy
 
-An Omarchy bar widget for monitoring EVE Online characters, skill queues,
-training countdowns, skill points, attributes, wallet balance, and online
-state. One widget manages as many characters as you authorize.
+Keep an eye on your capsuleers without leaving the Omarchy bar. EVE Online
+Monitor puts skill queues, character details, and wallet activity into one
+fast, keyboard-friendly popup for every character you authorize.
 
-## Status
+![EVE Online Monitor preview](preview.png)
 
-This is the initial development release. Current queue monitoring, live
-countdowns, multi-character selection, secure PKCE authorization, persistent
-ESI caching, demo mode, local skill plans, prerequisite/ETA calculations,
-categorized trained skills, and lazy detail panels are implemented. Plan
-editing is currently exposed through the backend CLI while the dashboard
-focuses on monitoring.
+## Highlights
+
+- Live skill-queue countdowns with current and total queue ETAs.
+- Multi-character support with quick character switching.
+- Overview, Training, Wealth, Industry, Activity, and Character views.
+- Collapsible queues, skill categories, wallet panels, implants, clones,
+  fatigue, standings, and loyalty sections.
+- Wallet balance and 30-day cash-flow chart with income, expenses, and net.
+- Local-time timestamps and readable EVE names for factions, corporations,
+  stations, systems, and accessible structures.
+- Local skill plans with prerequisite expansion and training-time estimates.
+- Persistent ESI caching, safe error fallbacks, and a demo mode for previews.
+
+The popup is deliberately focused on monitoring. It does not attempt to
+replace the EVE client or manage your character in-game.
 
 ## Requirements
 
@@ -50,20 +59,20 @@ same callback URL in its EVE developer application.
 
 ## Install
 
-From the project checkout while developing:
+Install directly from the public repository:
+
+```bash
+omarchy plugin add https://github.com/Nicoolai/omarchy-eve-monitor.git --enable
+omarchy bar move io.github.nicoolai.eve-monitor --section right
+```
+
+For local development from a checkout:
 
 ```bash
 mkdir -p ~/.config/omarchy/plugins
 cp -a /home/nicolai/src/omarchy-eve-monitor ~/.config/omarchy/plugins/io.github.nicoolai.eve-monitor
 omarchy-shell shell rescanPlugins
 omarchy plugin enable io.github.nicoolai.eve-monitor
-omarchy bar move io.github.nicoolai.eve-monitor --section right
-```
-
-After publishing:
-
-```bash
-omarchy plugin add https://github.com/nicoolai/omarchy-eve-monitor.git --enable
 omarchy bar move io.github.nicoolai.eve-monitor --section right
 ```
 
@@ -82,6 +91,20 @@ omarchy plugin remove io.github.nicoolai.eve-monitor
 - Press `r` in the panel to refresh.
 - Select a character row to make it the selected bar character.
 - Use `esc` to close the panel.
+
+The detail views are loaded on demand:
+
+- `Overview` shows queue status, skill points, wallet, location, ship, and
+  saved plan ETAs.
+- `Training` shows the active queue and categorized trained skills.
+- `Wealth` shows wallet balance and recent cash flow.
+- `Industry` combines industry jobs and market orders.
+- `Activity` shows character notifications.
+- `Character` shows implants, clones, fatigue, standings, and loyalty.
+
+Click a section heading to expand or collapse it. The panel also supports
+keyboard scrolling and keeps its scroll position while character details
+refresh.
 
 Configure the top-bar countdown with Omarchy's inline bar settings:
 
@@ -110,6 +133,9 @@ python3 bin/omarchy-eve-monitor snapshot
 python3 bin/omarchy-eve-monitor demo off
 ```
 
+The repository includes a root-level `preview.png` captured in demo mode for
+the Omarchy plugin marketplace and GitHub visitors.
+
 ## Data and API behavior
 
 Credentials are stored in `~/.config/omarchy-eve-monitor/state.json` with
@@ -117,6 +143,12 @@ private permissions. ESI responses are cached below
 `$XDG_CACHE_HOME/omarchy-eve-monitor` and conditional requests use ETags and
 Last-Modified headers. The widget refreshes no faster than the cache policy
 allows and computes countdowns locally between API refreshes.
+
+Authorization uses EVE Online SSO with OAuth PKCE. Press `a` in the popup to
+authorize a character. The plugin requests ESI permissions for the data it
+uses and performs no in-game write actions. Reauthorize existing characters
+after a scope change if private structure names are needed; those require
+`esi-universe.read_structures.v1` and docking access to the structure.
 
 The ESI API exposes the current skill queue, not an EVEMon-style saved skill
 plan. Saved plans will be local plugin data and will use ESI/SDE skill metadata
