@@ -13,7 +13,6 @@ import json
 import math
 import os
 import secrets
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,13 +43,34 @@ DEMO_FILE = CACHE_ROOT / "demo"
 CATALOG_FILE = CACHE_ROOT / "skill-catalog.json"
 SDE_URL = "https://developers.eveonline.com/static-data/eve-online-static-data-latest-jsonl.zip"
 
+# Keep every externally supplied document bounded independently of its timeout.
+MAX_JSON_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_ERROR_RESPONSE_BYTES = 64 * 1024
+MAX_HELPER_OUTPUT_BYTES = 4 * 1024 * 1024
+MAX_SDE_ARCHIVE_BYTES = 512 * 1024 * 1024
+MAX_SDE_ARCHIVE_MEMBERS = 10000
+MAX_SDE_MEMBER_COMPRESSED_BYTES = 64 * 1024 * 1024
+MAX_SDE_MEMBER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+MAX_SDE_JSONL_LINE_BYTES = 1024 * 1024
+MAX_SDE_JSONL_RECORDS = 500000
+STREAM_CHUNK_BYTES = 64 * 1024
+
 
 class MonitorError(Exception):
     pass
 
 
 def emit(payload: dict, exit_code: int = 0) -> None:
-    print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    if len(encoded) > MAX_HELPER_OUTPUT_BYTES:
+        encoded = json.dumps({
+            "ok": False,
+            "error": "helper response exceeds the output size limit",
+        }, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        exit_code = max(1, exit_code)
+    # ensure_ascii keeps the serialized helper response ASCII, so the byte
+    # limit above is also the number of bytes handed to QML.
+    sys.stdout.write(encoded.decode("ascii") + "\n")
     raise SystemExit(exit_code)
 
 
@@ -150,19 +170,88 @@ def load_catalog() -> dict:
     return data if isinstance(data.get("skills"), dict) else {"skills": {}}
 
 
+def bounded_read(stream, limit: int, description: str) -> bytes:
+    chunks = []
+    total = 0
+    while True:
+        chunk = stream.read(min(STREAM_CHUNK_BYTES, limit - total + 1))
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > limit:
+            raise MonitorError(f"{description} exceeds {limit} bytes")
+        chunks.append(chunk)
+
+
+def bounded_copy(stream, target, limit: int, description: str) -> None:
+    total = 0
+    while True:
+        chunk = stream.read(min(STREAM_CHUNK_BYTES, limit - total + 1))
+        if not chunk:
+            return
+        total += len(chunk)
+        if total > limit:
+            raise MonitorError(f"{description} exceeds {limit} bytes")
+        target.write(chunk)
+
+
+def header_value(headers, name: str) -> str:
+    wanted = name.lower()
+    for key, value in (headers or {}).items():
+        if str(key).lower() == wanted:
+            return str(value).strip()
+    return ""
+
+
+def declared_length(headers, limit: int, description: str) -> None:
+    value = header_value(headers, "Content-Length")
+    if not value:
+        return
+    try:
+        length = int(value)
+    except ValueError as error:
+        raise MonitorError(f"invalid {description} Content-Length") from error
+    if length < 0 or length > limit:
+        raise MonitorError(f"{description} exceeds {limit} bytes")
+
+
+def is_json_response(headers) -> bool:
+    content_type = header_value(headers, "Content-Type").split(";", 1)[0].strip().lower()
+    return content_type == "application/json" or content_type.endswith("+json")
+
+
 def catalog_records(archive: zipfile.ZipFile, filename: str) -> list[dict]:
-    entry = next((name for name in archive.namelist() if name.endswith("/" + filename) or name == filename), None)
+    members = archive.infolist()
+    if len(members) > MAX_SDE_ARCHIVE_MEMBERS:
+        raise MonitorError(f"SDE archive contains more than {MAX_SDE_ARCHIVE_MEMBERS} members")
+    entry = next((info for info in members if info.filename.endswith("/" + filename) or info.filename == filename), None)
     if not entry:
         raise MonitorError(f"SDE archive is missing {filename}")
+    if entry.compress_size > MAX_SDE_MEMBER_COMPRESSED_BYTES:
+        raise MonitorError(f"SDE member {filename} compressed size exceeds limit")
+    if entry.file_size > MAX_SDE_MEMBER_UNCOMPRESSED_BYTES:
+        raise MonitorError(f"SDE member {filename} uncompressed size exceeds limit")
     records = []
+    uncompressed = 0
     with archive.open(entry) as stream:
-        for raw in stream:
+        for record_number in range(MAX_SDE_JSONL_RECORDS):
+            raw = stream.readline(MAX_SDE_JSONL_LINE_BYTES + 1)
+            if not raw:
+                break
+            uncompressed += len(raw)
+            if uncompressed > MAX_SDE_MEMBER_UNCOMPRESSED_BYTES:
+                raise MonitorError(f"SDE member {filename} uncompressed size exceeds limit")
+            if len(raw) > MAX_SDE_JSONL_LINE_BYTES:
+                raise MonitorError(f"SDE member {filename} contains an oversized JSONL line")
             try:
                 record = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, ValueError):
                 continue
             if isinstance(record, dict):
                 records.append(record)
+        else:
+            if stream.readline(1):
+                raise MonitorError(f"SDE member {filename} contains too many JSONL records")
     return records
 
 
@@ -174,7 +263,8 @@ def update_catalog() -> dict:
     try:
         request = urllib.request.Request(SDE_URL, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as target:
-            shutil.copyfileobj(response, target)
+            declared_length(response.headers, MAX_SDE_ARCHIVE_BYTES, "SDE archive")
+            bounded_copy(response, target, MAX_SDE_ARCHIVE_BYTES, "SDE archive")
         with zipfile.ZipFile(temporary) as archive:
             groups = {
                 int(record["_key"]): (record.get("name", {}).get("en", "") if isinstance(record.get("name"), dict) else str(record.get("name", "")))
@@ -281,14 +371,27 @@ def json_request(url: str, *, method: str = "GET", data: bytes | None = None,
         request.add_header(key, value)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
+            declared_length(response.headers, MAX_JSON_RESPONSE_BYTES, "JSON response")
+            if not is_json_response(response.headers):
+                raise MonitorError("upstream response is not JSON")
+            raw = bounded_read(response, MAX_JSON_RESPONSE_BYTES, "JSON response")
             return json.loads(raw.decode("utf-8")), dict(response.headers.items())
     except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
+        if error.code == 304:
+            raise MonitorError(f"HTTP {error.code}: {error.reason}") from error
         try:
-            detail = json.loads(body)
-        except ValueError:
+            declared_length(error.headers, MAX_ERROR_RESPONSE_BYTES, "HTTP error response")
+            body_bytes = bounded_read(error, MAX_ERROR_RESPONSE_BYTES, "HTTP error response")
+        except MonitorError as limit_error:
+            raise MonitorError(f"HTTP {error.code}: {limit_error}") from error
+        finally:
+            error.close()
+        body = body_bytes.decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(body) if is_json_response(error.headers) else {}
+        except (UnicodeDecodeError, ValueError):
             detail = {}
+        detail = detail if isinstance(detail, dict) else {}
         raise MonitorError(f"HTTP {error.code}: {detail.get('error_description') or detail.get('error') or error.reason}") from error
     except (urllib.error.URLError, TimeoutError, ValueError) as error:
         raise MonitorError(f"network request failed: {error}") from error

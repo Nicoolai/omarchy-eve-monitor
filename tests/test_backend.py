@@ -1,8 +1,11 @@
 import importlib.util
+import io
 import json
 import tempfile
 import time
 import unittest
+import urllib.error
+import zipfile
 from pathlib import Path
 from importlib.machinery import SourceFileLoader
 from unittest.mock import patch
@@ -53,6 +56,12 @@ class NamedCharacterClient(CharacterClient):
 class StructureClient:
     def get(self, path, **kwargs):
         return {"name": "Private Citadel"}
+
+
+class FakeResponse(io.BytesIO):
+    def __init__(self, body, headers=None):
+        super().__init__(body)
+        self.headers = headers or {}
 
 
 class BackendTests(unittest.TestCase):
@@ -229,6 +238,76 @@ class BackendTests(unittest.TestCase):
     def test_demo_detail_rejects_unknown_feature(self):
         with self.assertRaises(eve_monitor.MonitorError):
             eve_monitor.demo_detail("unknown")
+
+    def test_bounded_read_rejects_oversized_stream(self):
+        with self.assertRaises(eve_monitor.MonitorError):
+            eve_monitor.bounded_read(io.BytesIO(b"12345"), 4, "test response")
+
+    def test_json_request_rejects_non_json_before_parsing(self):
+        response = FakeResponse(b"<html>not json</html>", {"Content-Type": "text/html"})
+        with patch.object(eve_monitor.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(eve_monitor.MonitorError, "not JSON"):
+                eve_monitor.json_request("https://example.test")
+
+    def test_json_request_rejects_declared_oversized_response(self):
+        response = FakeResponse(b"{}", {
+            "Content-Type": "application/json",
+            "Content-Length": str(eve_monitor.MAX_JSON_RESPONSE_BYTES + 1),
+        })
+        with patch.object(eve_monitor.urllib.request, "urlopen", return_value=response):
+            with self.assertRaisesRegex(eve_monitor.MonitorError, "JSON response exceeds"):
+                eve_monitor.json_request("https://example.test")
+
+    def test_json_request_bounds_error_body(self):
+        error = urllib.error.HTTPError(
+            "https://example.test", 500, "Server Error", {},
+            io.BytesIO(b"x" * (eve_monitor.MAX_ERROR_RESPONSE_BYTES + 1)),
+        )
+        with patch.object(eve_monitor.urllib.request, "urlopen", side_effect=error):
+            with self.assertRaisesRegex(eve_monitor.MonitorError, "HTTP error response exceeds"):
+                eve_monitor.json_request("https://example.test")
+
+    def test_catalog_records_bounds_member_size_line_and_record_count(self):
+        def archive_with(name, body, compression=zipfile.ZIP_STORED, extra_names=()):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", compression=compression) as archive:
+                archive.writestr(name, body)
+                for extra_name in extra_names:
+                    archive.writestr(extra_name, b"{}\n")
+            return zipfile.ZipFile(io.BytesIO(buffer.getvalue()))
+
+        with patch.object(eve_monitor, "MAX_SDE_MEMBER_COMPRESSED_BYTES", 1):
+            with archive_with("groups.jsonl", b"{}\n") as archive:
+                with self.assertRaisesRegex(eve_monitor.MonitorError, "compressed size exceeds"):
+                    eve_monitor.catalog_records(archive, "groups.jsonl")
+
+        with patch.object(eve_monitor, "MAX_SDE_MEMBER_UNCOMPRESSED_BYTES", 4):
+            with archive_with("groups.jsonl", b"{}\n{}\n") as archive:
+                with self.assertRaises(eve_monitor.MonitorError):
+                    eve_monitor.catalog_records(archive, "groups.jsonl")
+
+        with patch.object(eve_monitor, "MAX_SDE_JSONL_LINE_BYTES", 4):
+            with archive_with("groups.jsonl", b"12345\n") as archive:
+                with self.assertRaisesRegex(eve_monitor.MonitorError, "oversized JSONL line"):
+                    eve_monitor.catalog_records(archive, "groups.jsonl")
+
+        with patch.object(eve_monitor, "MAX_SDE_JSONL_RECORDS", 1):
+            with archive_with("groups.jsonl", b"{}\n{}\n") as archive:
+                with self.assertRaisesRegex(eve_monitor.MonitorError, "too many JSONL records"):
+                    eve_monitor.catalog_records(archive, "groups.jsonl")
+
+        with patch.object(eve_monitor, "MAX_SDE_ARCHIVE_MEMBERS", 1):
+            with archive_with("groups.jsonl", b"{}\n", extra_names=("other.jsonl",)) as archive:
+                with self.assertRaisesRegex(eve_monitor.MonitorError, "more than"):
+                    eve_monitor.catalog_records(archive, "groups.jsonl")
+
+    def test_emit_replaces_oversized_helper_output(self):
+        output = io.StringIO()
+        with patch.object(eve_monitor, "MAX_HELPER_OUTPUT_BYTES", 100), patch.object(eve_monitor.sys, "stdout", output):
+            with self.assertRaises(SystemExit) as raised:
+                eve_monitor.emit({"ok": True, "data": "x" * 200})
+        self.assertEqual(raised.exception.code, 1)
+        self.assertEqual(json.loads(output.getvalue())["ok"], False)
 
 
 if __name__ == "__main__":
